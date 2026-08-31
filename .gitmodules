@@ -1,0 +1,3 @@
+[submodule "DeepSDFStruct"]
+	path = DeepSDFStruct
+	url = https://github.com/mkofler96/DeepSDFStruct.git
