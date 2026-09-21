@@ -1,0 +1,140 @@
+# Repository structure
+
+What lives where, and — more useful — **how to decide where a new file goes**.
+
+## The one rule
+
+```
+experiments/  ──imports──▶  structsept/  ──imports──▶  DeepSDFStruct/
+```
+
+Arrows point one way and never bend back:
+
+- `structsept/` **must not** import from `experiments/`.
+- `experiments/` files **must not** import each other.
+- Nothing in this repo modifies `DeepSDFStruct/`; it is an upstream submodule.
+
+The rule has a practical consequence you can act on: the moment a second caller
+needs something that lives in `experiments/`, that something **moves into
+`structsept/`**. You never fix it by importing sideways.
+
+## Where does my new file go?
+
+| If the thing you are writing… | …it belongs in |
+|---|---|
+| will be called by more than one other file | `structsept/` |
+| is a geometry, a solver, a data structure, a transform | `structsept/` |
+| produces a figure, a mesh, a number you want to look at once | `experiments/` |
+| answers one question and is then finished | `experiments/` |
+| asserts that something is true and must stay true | `tests/` |
+| explains *why* rather than *what* | `docs/` |
+
+Unsure? Put it in `experiments/`. Promoting a file later is one `git mv` plus
+an import line; demoting a tangled library module is not.
+
+## The tree
+
+```
+code/                        <- VS Code workspace root
+│
+├── structsept/              LIBRARY — importable, no side effects on import
+│   ├── __init__.py
+│   ├── plate_with_hole.py       the recurring test geometry + ScaledSpaceSDF
+│   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space
+│   ├── pointcloud_sdf.py        SDF from an unoriented point cloud
+│   ├── fem.py                   tetrahedral meshing + stiffness assembly
+│   └── app/                     Tkinter application
+│       ├── main.py                  GUI shell, worker threads
+│       ├── datasets.py              meshes -> SdfSamples dataset  (step 1)
+│       ├── training.py              drives the DeepSDF trainer    (step 2)
+│       ├── models.py                lattice assembly + evaluation (steps 3-4)
+│       └── viz.py                   drawing only; no torch imported here
+│
+├── experiments/            RUNNABLE ONE-OFFS — never imported by anything
+│   ├── plate_geometry.py            lattice plate, geometry only
+│   ├── plate_with_hole_network.py   the plate driven by the trained decoder
+│   ├── plate_with_hole_stiffness.py the plate taken to the stiffness matrix K
+│   ├── pointcloud_to_lattice.py     point cloud in, latent field out
+│   ├── IDEIAS.md                    Portuguese notebook: queue + findings
+│   └── outputs/                     what those four scripts write (gitignored)
+│
+├── tests/
+│   └── test_deepsdfstruct_env.py    offline smoke test of env + core API
+│
+├── docs/
+│   ├── structure.md                 this file
+│   ├── paper_context.md             the reference paper, distilled
+│   ├── context-maintenance.md       procedure for keeping CLAUDE.md current
+│   ├── context-log.md               one entry per maintenance pass
+│   └── stiffness_theory/            Typst source + figures -> stiffness_theory.pdf
+│
+├── DeepSDFStruct/          GIT SUBMODULE — the library the project is built on
+│
+├── data/  runs/  outputs/           generated, all gitignored
+├── CLAUDE.md                        instructions loaded into every AI session
+└── pyproject.toml                   deps + the two editable installs
+```
+
+## Why there are no `sys.path` hacks any more
+
+`pyproject.toml` installs **two** packages editable into `.venv`:
+
+| Package | Source | Declared by |
+|---|---|---|
+| `structsept` | this folder | `[tool.uv] package = true` + `[tool.setuptools] packages` |
+| `DeepSDFStruct` | the submodule | `[tool.uv.sources]` |
+
+So `import structsept.fem` resolves from any working directory, and a script
+in `experiments/` can be run as a path, as a module, or from the VS Code Run
+panel without caring where the shell happens to be.
+
+Before this, four files carried `sys.path.insert(...)` lines, one of them with
+a **relative** path (`docs/stiffness_theory/make_figures.py`), which meant the
+figure build silently only worked when launched from the repo root. All four
+are gone.
+
+## Running things
+
+Always through `uv run` — never a bare `python`.
+
+```bash
+# experiments: plain scripts
+uv run python experiments/plate_geometry.py
+uv run python experiments/plate_with_hole_stiffness.py --solid --resolution 8
+
+# library modules that also carry a CLI: run them as modules
+uv run python -m structsept.plate_with_hole --hole-radius 0.3
+uv run python -m structsept.plate_hole_params --n 128 --plot
+
+# the GUI
+uv run python -m structsept.app.main
+
+# tests
+uv run pytest tests/ -v
+uv run pytest DeepSDFStruct/tests/test_structural_optimization.py -v
+```
+
+A library module having a `if __name__ == "__main__":` block is allowed — it
+is a convenient way to eyeball what the module builds. What is *not* allowed is
+the reverse direction: importing a file out of `experiments/`.
+
+## Where output lands
+
+| Path | Written by | Tracked? |
+|---|---|---|
+| `experiments/outputs/` | the four experiment scripts (`--outdir` overrides) | no |
+| `outputs/` | older runs of the same scripts | no |
+| `data/`, `runs/` | the app: sampled datasets and training runs | no |
+| `docs/stiffness_theory/figures/` | `make_figures.py` | yes — they go in the PDF |
+
+Everything under the first three is regenerable. If a result matters, write it
+down in `experiments/IDEIAS.md` rather than relying on the file surviving.
+
+## Naming conventions
+
+- Folder and module names are **English**; the `IDEIAS.md` notebook and the
+  app's user-facing strings stay Portuguese.
+- Modules are named for the object they describe (`plate_with_hole`, `fem`),
+  not for the action (`build_plate`, `run_fem`).
+- Experiment scripts read as a sentence about what they produce:
+  `plate_with_hole_stiffness.py` = that plate, taken as far as the stiffness.

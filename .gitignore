@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.paper_text.txt
+
+# Generated artefacts: meshes, matrices, figures. Every script can remake them.
+outputs/
+experiments/outputs/
+
+# Sampled datasets and trained runs of the structsept app: heavy and reproducible.
+data/
+runs/
+
+# The reference paper (Kofler et al., Graphical Models 142 (2025) 101307) is
+# Elsevier-copyrighted and this repo is public. CLAUDE.md expects the PDF one
+# level above the workspace anyway; this root copy is not ours to redistribute.
+Struct_Opt_Neural_Networks.pdf
+
+# Loose scratch: a 5-line npz peek and the sample it reads.
+np.py
+round_cross_00000.npz
+
+# Scratch renders of the unit cells, unreferenced by any module.
+structsept/app/_celulas*.png

@@ -1,0 +1,59 @@
+{
+  // Run and Debug panel (Ctrl+Shift+D). Pick a configuration and press
+  // F5 (debug) or Ctrl+F5 (run without debugging). All of them run from the
+  // repo root, so relative paths like experiments/outputs work, and use the
+  // .venv interpreter from settings.json -- the same one `uv run` uses.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: arquivo atual",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      // interpretador fixo: F5 funciona mesmo se o Python selecionado no
+      // canto inferior direito for outro (global, conda, ...)
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      // false = breakpoints also work inside DeepSDFStruct and torch-fem
+      "justMyCode": false
+    },
+    {
+      "name": "Placa com furo -> matriz de rigidez",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/experiments/plate_with_hole_stiffness.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      // interpretador fixo: F5 funciona mesmo se o Python selecionado no
+      // canto inferior direito for outro (global, conda, ...)
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false
+    },
+    {
+      "name": "Placa maciça -> matriz de rigidez",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/experiments/plate_with_hole_stiffness.py",
+      "args": ["--solid", "--outdir", "experiments/outputs/solid"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      // interpretador fixo: F5 funciona mesmo se o Python selecionado no
+      // canto inferior direito for outro (global, conda, ...)
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false
+    },
+    {
+      "name": "Placa com furo -> geometria",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "structsept.plate_with_hole",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      // interpretador fixo: F5 funciona mesmo se o Python selecionado no
+      // canto inferior direito for outro (global, conda, ...)
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false
+    }
+  ]
+}

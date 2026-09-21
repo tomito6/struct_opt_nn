@@ -1,0 +1,31 @@
+[project]
+name = "struct-sept"
+version = "0.1.0"
+description = "Structural optimization of lattice structures with DeepSDF geometry"
+requires-python = ">=3.10"
+dependencies = [
+    "DeepSDFStruct",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Listed explicitly: auto-discovery would trip over the other top-level
+# directories (DeepSDFStruct, docs, experiments, tests) and refuse to guess.
+packages = ["structsept", "structsept.app"]
+
+[tool.uv]
+# Install this folder as an editable package, so `import structsept` works from
+# any working directory and no script needs a sys.path hack.
+package = true
+# Install DeepSDFStruct via a plain-path .pth rather than setuptools' import-hook
+# finder, so the real package outranks the same-named submodule directory.
+config-settings-package = { DeepSDFStruct = { editable_mode = "compat" } }
+# The project lives under OneDrive, where uv's default hardlinking fails
+# ("incompatible hardlinks", os error 396) when it rebuilds the submodule.
+link-mode = "copy"
+
+[tool.uv.sources]
+DeepSDFStruct = { path = "DeepSDFStruct", editable = true }
