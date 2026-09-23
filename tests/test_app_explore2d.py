@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import time
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -180,18 +179,6 @@ def test_width_checks_match_the_2d_decoder():
             assert errors, hp
 
 
-def test_neighbour_r2_tells_kept_from_lost():
-    from structsept.app import models
-
-    rng = np.random.default_rng(0)
-    codes = rng.uniform(-1, 1, (200, 2))
-    kept = codes[:, 0] + 0.5 * codes[:, 1] ** 2  # a smooth function of the codes
-    lost = rng.uniform(0, 1, 200)  # unrelated to them
-    assert models.neighbour_r2(codes, kept) > 0.9
-    assert models.neighbour_r2(codes, lost) < 0.2
-    assert np.isnan(models.neighbour_r2(codes, np.ones(200)))
-
-
 # --------------------------------------------------------------------------- #
 # the app
 # --------------------------------------------------------------------------- #
@@ -273,21 +260,6 @@ def test_the_run_goes_to_the_right_explorer(app, trained_run):
     assert tab_explore2d.select_model(st, run_dir.name)
 
 
-def test_run_shapes_follow_the_latent_order(trained_run, plate_data):
-    from structsept.app import models
-
-    run_dir, _ = trained_run
-    shapes = models.run_shapes(run_dir)
-    split = json.loads(
-        (plate_data / "splits" / "plate_hole_2d.json").read_text(encoding="utf-8")
-    )
-    assert shapes["names"] == split["plate_hole_2d"]["plate"]
-    assert shapes["param_names"] == ["x_c", "y_c", "r"]
-    # params.csv joined on the name: the radius encoded in each name matches
-    for name, r in zip(shapes["names"], shapes["params"]["r"]):
-        assert name.endswith("_r" + f"{r:.4f}".replace(".", "p"))
-
-
 @pytest.fixture(scope="module")
 def loaded(app, trained_run):
     from structsept.app import tab_explore2d
@@ -303,64 +275,36 @@ def loaded(app, trained_run):
     return app
 
 
-def test_explore2d_loads_codes_parameters_and_errors(loaded):
+def test_explore2d_loads_one_slider_per_component(loaded):
     st = loaded.app_state
     assert st["e2_trained"].shape == (N_SHAPES, 2)
-    assert np.isfinite(st["e2_errors"]).all()
-    assert set(st["e2_scores"]) == {"x_c", "y_c", "r"}
-    assert st["e2_metrics"]["fit"][0].get() != "--"
+    assert len(st["e2_sliders"]) == 2
+    assert np.allclose(st["e2_latent"], st["e2_trained"].mean(axis=0))
+    assert st["e2_metrics"]["area"][0].get() != "--"
+    assert st["e2_coverage_note"].get().startswith("nearest trained code")
     assert st.get("callback_errors") is None
 
 
-def test_clicking_the_map_moves_lambda(loaded):
+def test_sliders_move_lambda_and_redraw(loaded):
     from structsept.app import tab_explore2d
 
     st = loaded.app_state
-    ax = st["e2_ax_map"]
-    target = st["e2_trained"][3]
-    event = SimpleNamespace(
-        name="button_press_event",
-        inaxes=ax,
-        button=1,
-        xdata=float(target[0]),
-        ydata=float(target[1]),
-    )
-    tab_explore2d._on_map_mouse(st, event)
-    _pump(loaded, 0.4)
-    assert np.allclose(st["e2_latent"], target)
-    assert st["e2_metrics"]["nearest"][0].get() == "#3"
-    assert st["e2_metrics"]["distance"][0].get() == "0.000"
-
-    # a drag without the button held is only a hover, and moves nothing
-    hover = SimpleNamespace(
-        name="motion_notify_event", inaxes=ax, button=None, xdata=9.0, ydata=9.0
-    )
-    tab_explore2d._on_map_mouse(st, hover)
-    assert np.allclose(st["e2_latent"], target)
-    assert st.get("callback_errors") is None
-
-
-def test_slider_colour_and_snap(loaded):
-    from structsept.app import tab_explore2d
-
-    st = loaded.app_state
-    st["e2_component"].set("λ₂")
-    tab_explore2d._sync_scale(st)
     lo, hi = st["e2_slider_range"]
-    tab_explore2d._on_scale(st, float(hi[1]))
-    _pump(loaded, 0.4)
+    before = st["e2_metrics"]["phi"][0].get()
+    tab_explore2d._on_scale(st, 0, float(lo[0]))
+    tab_explore2d._on_scale(st, 1, float(hi[1]))
+    _pump(loaded, 0.8)
+    assert st["e2_latent"][0] == pytest.approx(lo[0])
     assert st["e2_latent"][1] == pytest.approx(hi[1])
+    assert st["e2_sliders"][1][1].cget("text") == f"{hi[1]:+.3f}"
+    assert st["e2_metrics"]["phi"][0].get() != before
+    # both sliders sit outside the trained range: the status says so
+    assert "outside the trained range" in st["e2_status"].get()
 
-    for choice in ("none", "x_c", "fit error"):
-        st["e2_colour"].set(choice)
-        tab_explore2d._rebuild_map(st)
-    st["e2_show_truth"].set(False)
-    tab_explore2d._redraw_field(st)
-    st["e2_show_truth"].set(True)
-
-    tab_explore2d._snap_to_nearest(st)
-    _pump(loaded, 0.4)
-    assert st["e2_metrics"]["distance"][0].get() == "0.000"
+    tab_explore2d._reset_to_mean(st)
+    _pump(loaded, 0.8)
+    assert np.allclose(st["e2_latent"], st["e2_trained"].mean(axis=0))
+    assert "outside" not in st["e2_status"].get()
     assert st.get("callback_errors") is None
 
 

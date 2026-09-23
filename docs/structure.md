@@ -58,7 +58,7 @@ code/                        <- VS Code workspace root
 │   └── app/                     Tkinter applications (two windows)
 │       ├── main.py                  shell: Explore, Explore 2-D, Train tabs
 │       ├── tab_explore.py           drive f_theta by moving control points
-│       ├── tab_explore2d.py         planar decoders: latent map vs parameters
+│       ├── tab_explore2d.py         planar decoders: one slider per λ
 │       ├── tab_train.py             dataset -> decoder, loss curve, run list
 │       ├── hparam_window.py         the "All hyperparameters..." window
 │       ├── hyperparams.py           every specs.json key: schema, checks, I/O

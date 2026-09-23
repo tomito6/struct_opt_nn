@@ -337,10 +337,52 @@ dimensões; a pergunta é **qual deles o latente sacrifica**.
   ~150 épocas em 25 min. Sugestão: d = 2, 150 épocas, `SamplesPerScene` 2000,
   `Step` a cada 60 épocas com fator 0,5, sem dropout; o resto no default. O
   default (200 épocas × 8000 amostras) levaria ~2 h.
-- **Como ler o resultado:** Explore 2-D, painel "What the codes kept": um R²
-  por parâmetro (regressão pelos vizinhos mais próximos no espaço latente). Perto
-  de 1 = guardado, ≤ 0 = perdido. Controle que vale a pena: o mesmo dataset com
-  d = 3, que custa o mesmo por época.
+- **Como ver o resultado:** aba Explore 2-D, igual à Explore: um slider por
+  componente de λ (λ₁, λ₂) e a forma `f_θ(λ, x, y)` mudando junto. Controle
+  que vale a pena: o mesmo dataset com d = 3, que custa o mesmo por época.
+
+## Treino de 30 min com a planilha "Quick setup" (23/09)
+
+Planilha `NN_Training_Hyperparameters_Quick_Clean.xlsx`: 25 formas, 50 mil
+amostras cada, 4096 pontos por passo, 5 formas por batch, d = 2, rede 4 × 64
+ReLU sem dropout, 250 épocas, Adam 5e-4 / 1e-3, clamped L1 com δ = 0,1.
+
+- **Como está, a planilha treina em 1 min, não em 30.** Medido pelo mesmo
+  caminho da GUI (`structsept.app.training.train`): 58 s, 0,19 s por época. A
+  rede 4 × 64 é ~6× mais barata que a 6 × 128 do default, então a conta do
+  item anterior (35 µs por ponto) não vale pra ela: aqui dá ~2 µs por ponto.
+- **Pra encher 30 min, mudei só duas coisas:** 25 → 134 formas (o paper usou
+  120 pra d = 2; com 25 o R² do x_c saiu −0,26) e 250 → 1500 épocas. Com 1500
+  o `Step` de 500 finalmente dispara (lr cai pela metade em 500 e 1000); com
+  250 ele nunca caía. Medido: 1,11 s por época + 11 s de setup → ~28 min
+  *sem GUI*. Na GUI deve dar ~32–35 min: o gráfico de loss da aba Train
+  recarrega o `Logs.pth` e redesenha todas as losses por batch a cada 1,5 s, e
+  isso fica mais caro conforme o run cresce (×1,1 no começo, ×1,35 perto da
+  época 1400, medido num microbenchmark). Pra caber em 30 min na GUI: 1250
+  épocas.
+- **Traduções da planilha pro trainer:** "4096 pontos por passo" virou
+  `SamplesPerScene` 4096 (por forma, convenção do DeepSDF → 20 480 pontos por
+  passo). "Variância 0,01" virou `CodeInitStdDev` = √(0,01 · 2) ≈ 0,141, porque o
+  trainer sorteia N(0, (σ/√d)²). "Amostragem uniforme": o trainer pega uma
+  janela aleatória do array já embaralhado, metade dentro e metade fora; o
+  dataset guarda metade uniforme + metade perto das bordas, porque com clamp de
+  0,1 ponto longe da superfície quase não ensina nada.
+- **Arquivos:** `data/SdfSamples/plate_hole_2d_n25` (Sobol 19 + 6 extremos) e
+  `plate_hole_2d_n134` (Sobol 128 + 6), 25 mil uniformes + 25 mil na faixa por
+  placa. Presets em `runs/preset_plate2d_sheet_quick` e
+  `runs/preset_plate2d_30min` (só `specs.json`, não treinados; o dataset certo
+  aparece na coluna dataset da tabela de runs). Na GUI: escolher o dataset →
+  "All hyperparameters…" → Start from `run: preset_plate2d_30min` → Load →
+  Apply → Train. Não apertar o botão "Quick preset" do card depois (ele põe 30
+  épocas), e limpar o "Run name" antes de um segundo run na mesma sessão (senão
+  ele oferece sobrescrever o anterior).
+- **O que a planilha não diz e o trainer faz:** a rede "4 × 64" sai 64-60-64-64,
+  porque o skip na camada 2 (default mantido) reinjeta (λ, x) e a camada 1
+  encolhe 4 neurônios. A regularização do latente não começa em 1e-4: sobe em
+  rampa de 0 até 1e-4 nas primeiras 100 épocas (fixo no trainer).
+- **Smoke run (planilha pura, 25 formas):** loss 0,057 → 0,016, erro de
+  ajuste mediano 0,016, R² x_c −0,26 · y_c 0,90 · r 0,32. O latente de 250
+  épocas guardou o y_c e largou o x_c — ver se isso muda com 134 formas.
 
 ## Perguntas em aberto
 

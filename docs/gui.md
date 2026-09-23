@@ -106,10 +106,6 @@ default design (the mean of the codes, 0.115) sitting inside it. That is why the
 default lattice comes out thin. The old status line reported
 zero values out of range, because the mean *is* inside the bounding box.
 
-The scatter does come back once, on the Explore 2-D tab, in a form that answers
-a question: there every dot is coloured by the parameter that generated its
-shape, and that colouring is the whole point of the view.
-
 ---
 
 ## Rendering decisions worth not undoing
@@ -143,27 +139,18 @@ debounced resize.
 
 ## Explore 2-D tab
 
-A decoder trained on **2-D samples** `(x, y, φ)` — the `datagen` plate with a
-hole — is `f_θ(λ, x, y)`: one latent vector is one whole shape in the plane.
-There is no unit cell to tile and no latent field over a domain, so the Explore
-tab does not apply; it lists only 3-D decoders, and planar ones appear here.
+The same tab as Explore, for a decoder trained on **2-D samples** `(x, y, φ)` —
+the `datagen` plate with a hole. Such a decoder is `f_θ(λ, x, y)`: one latent
+vector is one whole shape, so there is no lattice and no control net. The design
+variables are the components of `λ` itself, one slider each, and the tab shows
+how `λ₁`, `λ₂`, ... change the shape. Explore lists only 3-D decoders; planar
+ones appear here.
 
-The experiment behind it: the plates were drawn from three parameters
-`(x_c, y_c, r)`, the network never saw them and learned its own `d`-dimensional
-code per plate. Which of the three did the codes keep? The panels answer that:
-
-| Panel | What it shows |
+| Panel | Same as on Explore |
 |---|---|
-| **Latent space** (left) | one dot per training shape at its learned code, coloured by `x_c`, `y_c`, `r` or the fit error. Click or drag to move `λ`; the red cross is the current `λ`, the amber ring the nearest trained shape. For `d > 2`, pick the pair of components to plot. |
-| **Shape** (centre) | `f_θ(λ, ·)` on `[-1, 1]²` as material/void, with the nearest training shape's *stored* near-surface samples in amber on top — the true boundary the decoder was supposed to reproduce. Tiles: which shape is nearest, how far in latent units, its per-shape fit error, material share. The status line warns when `λ` sits more than twice the typical code spacing away from every trained code: extrapolation. |
-| **What the codes kept** (right) | the same cloud once per parameter, side by side, plus the fit error. Each title carries an `R²`: leave-one-out nearest-neighbour regression of the parameter from the codes. Near 1, close codes mean close parameter values — kept. Near 0 or below, lost. Unlike a linear fit it does not care how the parameter is laid out. |
-
-Where the numbers come from: the run's `LatentCodes/latent_code_data_map.json`
-gives the `.npz` behind each code, in latent order; `params.csv` next to the
-dataset (written by `datagen`) is joined on the instance name. The fit error is
-the clamped L1 between `f_θ(λᵢ, ·)` and the stored samples of shape `i` — the
-training loss, per shape. A run without a parameter table still loads; only
-the colouring is missing.
+| **Design variables** (left) | one slider per component of `λ`, starting at the mean of the trained codes; Reset to mean |
+| **Geometry** (centre) | `f_θ(λ, ·)` on `[-1, 1]²` as material/void, with material fraction, `f_θ` range and zero level set |
+| **Latent coverage** (right) | one strip per component: where the trained codes are, where `λ` is, the widest untrained gap, and the distance to the nearest trained code |
 
 ---
 
@@ -254,7 +241,7 @@ values typed into the window. The window itself is driven off-screen.
 `tests/test_app_explore2d.py` runs the planar path end to end on a 6-shape
 `datagen` plate set: the dataset is recognised as 2-D, a two-epoch throwaway run
 is trained by the Train tab's own code, lands on Explore 2-D and not on Explore,
-and the map, slider, colouring and snap are driven off-screen.
+and its sliders are driven off-screen.
 `tests/test_datagen.py` covers the generator itself — the field against a
 brute-force distance, the file contract, overwrite safety. Run them with the
 rest:
@@ -283,5 +270,4 @@ uv run pytest tests/ -q
 - The SDF maker reads its mesh folder on the Tk thread, so it freezes while
   loading a large folder. Pre-existing, and kept as-is with the rest of it.
 - Explore 2-D shows the field, not a mesh: there is no surface extraction or
-  STL export for planar decoders yet. Its `R²` needs a handful of shapes per
-  neighbourhood to mean anything; on a few dozen shapes it is noisy.
+  STL export for planar decoders yet.

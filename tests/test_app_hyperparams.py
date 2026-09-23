@@ -714,13 +714,17 @@ def test_changed_rows_are_marked(app, window):
 
 
 def test_card_flags_an_invalid_combination(app):
+    from structsept.app import tab_train
+
     st = app.app_state
     st["tr_latent_dim"].set(20)
     st["tr_width"].set(16)
     _pump(app, 0.2)
     try:
         assert str(st["tr_hp_summary_label"].cget("style")) == "Card.Danger.TLabel"
-        assert "d + 3" in st["tr_hp_summary"].get()
+        # d + 3 on a 3-D dataset, d + 2 on a 2-D one: whatever is in data/
+        geom = tab_train._geom(tab_train._selected_dataset(st))
+        assert f"d + {geom}" in st["tr_hp_summary"].get()
     finally:
         st["tr_latent_dim"].set(1)
         st["tr_width"].set(128)
