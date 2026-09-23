@@ -258,6 +258,55 @@ Levantamento feito antes de decidir se vale treinar rede própria.
   `LocalShapesReconstructor` usa. Nos `Primitives*` os latentes salvos são
   zeros; o que vale é o `latent_fields_state_dict`.
 
+## Hiperparâmetros do treino — o que o trainer lê de verdade (23/09)
+
+Levantamento feito pra janela "All hyperparameters..." da aba Train
+(`structsept/app/hyperparams.py` descreve cada chave do `specs.json`, com
+faixa, default e o que faz). Lendo `deep_sdf/training.py` e o
+`DeepSDFDecoder` linha por linha apareceram umas pegadinhas:
+
+- **O gradient clipping é fixo em 1,0.** O trainer lê `GradientClipNorm` e
+  logo depois, dentro do laço, sobrescreve com `grad_clip = 1.0`. Qualquer
+  valor no specs é ignorado. Por isso a janela não oferece esse campo e lista
+  ele em "Not editable here". Bug da biblioteca — vale reportar upstream.
+- **`clampedL1` tem clamp próprio de 0,1.** `get_loss_function` constrói
+  `ClampedL1Loss()` com o default `clamp_val=0.1`, independente de
+  `ClampingDistance`. Com δ = 1,0 (como no `Primitives2D`) a faixa aprendida
+  continua sendo ±0,1. Pra aprender a faixa larga de verdade: `L1`.
+- **Com os defaults o learning rate nunca cai.** O `Step` divide por 2 a cada
+  500 épocas, e os runs do app têm 30–200. A janela avisa isso como nota.
+- **`SamplesPerScene` ímpar derruba o treino.** O loader tira `n // 2` de dentro
+  e `n // 2` de fora (total `n − 1`), mas os índices dos latentes são repetidos
+  `n` vezes: o `torch.cat` falha por uma linha. Confirmado num run de teste.
+- **`latent_in = n_layers + 1` não é ignorado.** Índices de skip além das camadas
+  somem em silêncio, *menos* esse: o construtor testa `layer + 1 in latent_in`
+  até a camada de saída e a deixa com `1 − (d + 3)` neurônios → erro na
+  construção. Índice 0 também quebra (dobra a entrada da primeira camada).
+- **`CodeRegularization` (bool) não é lido.** Só o `CodeRegularizationLambda`
+  conta; λ = 0 desliga. E o termo entra em rampa: `λ · min(1, época/100)`.
+- **Os dois schedules são dois grupos do Adam**: o primeiro vale pros pesos do
+  decoder e o segundo pros códigos latentes, nessa ordem.
+- **O `seed` do specs não fixava os pesos iniciais.** `train_deep_sdf` constrói
+  o decoder (`init_decoder`, pesos tirados do RNG global do torch) *antes* de
+  chamar `torch.manual_seed`. No app, que vive muito tempo, o RNG já foi mexido
+  por runs anteriores e pela aba Explore: dois runs idênticos saíam com pesos
+  diferentes (|Δw| máx ≈ 0,9). Agora `structsept.app.training.train` semeia antes
+  de chamar a biblioteca, e o teste `test_same_seed_gives_the_same_network`
+  cobre isso. Qualquer script que chame `train_deep_sdf` direto tem o mesmo
+  problema.
+- **A última batch incompleta é descartada.** O `DataLoader` do trainer usa
+  `drop_last=True` sempre que a batch cabe no dataset: com 15 formas e 10 por
+  batch, 5 formas (sorteadas) ficam de fora de cada época. Um tamanho de batch
+  que divida o número de formas usa todas.
+
+Experimentos que isso abre (baratos, poucos minutos de CPU cada):
+
+- Varrer o learning rate do decoder (1e-4 … 3e-3) num dataset pequeno com
+  `Step` a cada ~50 épocas, e ver se o loss final de 200 épocas melhora em
+  relação ao default que nunca decai.
+- `clampedL1` com δ = 0,1 contra `L1` com δ = 0,3: o que muda na fração de
+  volume e na espessura das barras quando a faixa aprendida é maior?
+
 ## Perguntas em aberto
 
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram

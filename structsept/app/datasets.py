@@ -82,7 +82,7 @@ def load_meshes(folder, ext="stl", log=print):
     ext : str, default "stl"
         File extension, with or without the leading dot.
     log : callable, default print
-        Receives short Portuguese progress lines.
+        Receives short progress lines.
 
     Returns
     -------
@@ -91,7 +91,7 @@ def load_meshes(folder, ext="stl", log=print):
     """
     folder = pathlib.Path(folder)
     if not folder.is_dir():
-        log(f"Pasta nao encontrada: {folder}")
+        log(f"Folder not found: {folder}")
         return []
 
     meshes = []
@@ -100,18 +100,18 @@ def load_meshes(folder, ext="stl", log=print):
         try:
             mesh = trimesh.load_mesh(path)
         except Exception as exc:
-            log(f"Ignorado {path.name}: nao deu para ler ({exc})")
+            log(f"Skipped {path.name}: could not be read ({exc})")
             continue
 
         if isinstance(mesh, trimesh.Scene):
             parts = list(mesh.geometry.values())
             if not parts:
-                log(f"Ignorado {path.name}: cena vazia")
+                log(f"Skipped {path.name}: empty scene")
                 continue
             mesh = trimesh.util.concatenate(parts)
 
         if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
-            log(f"Ignorado {path.name}: nao e uma malha de triangulos")
+            log(f"Skipped {path.name}: not a triangle mesh")
             continue
 
         mesh.metadata["file_name"] = path.name
@@ -119,11 +119,11 @@ def load_meshes(folder, ext="stl", log=print):
             not_watertight.append(path.name)
         meshes.append(mesh)
 
-    log(f"{len(meshes)} malha(s) carregada(s) de {folder}")
+    log(f"{len(meshes)} mesh(es) loaded from {folder}")
     if not_watertight:
         log(
-            f"Aviso: {len(not_watertight)} malha(s) nao sao watertight "
-            f"({', '.join(not_watertight)}). O sinal do SDF fica sem sentido nelas."
+            f"Warning: {len(not_watertight)} mesh(es) are not watertight "
+            f"({', '.join(not_watertight)}). The sign of the SDF is meaningless on them."
         )
     return meshes
 
@@ -158,7 +158,7 @@ def make_dataset(
     add_surface_samples : bool, default True
         Concentrate extra samples near the zero level set.
     log : callable, default print
-        Receives short Portuguese progress lines.
+        Receives short progress lines.
 
     Returns
     -------
@@ -173,28 +173,28 @@ def make_dataset(
     split_path = splitdir / f"{dataset_name}.json"
 
     if not meshes:
-        raise ValueError("Nenhuma geometria para amostrar.")
+        raise ValueError("No geometry to sample.")
 
     outdir.mkdir(parents=True, exist_ok=True)
     splitdir.mkdir(parents=True, exist_ok=True)
 
-    log(f"Dataset '{dataset_name}', classe '{class_name}' -> {class_dir}")
-    log(f"{len(meshes)} geometria(s), {int(n_samples)} amostras uniformes cada")
+    log(f"Dataset '{dataset_name}', class '{class_name}' -> {class_dir}")
+    log(f"{len(meshes)} geometry(ies), {int(n_samples)} uniform samples each")
 
     open_meshes = [
         m for m in meshes if isinstance(m, trimesh.Trimesh) and not m.is_watertight
     ]
     if open_meshes:
         log(
-            f"Aviso: {len(open_meshes)} malha(s) nao sao watertight; "
-            "dentro/fora vai sair errado nelas."
+            f"Warning: {len(open_meshes)} mesh(es) are not watertight; "
+            "inside/outside will come out wrong on them."
         )
 
     # The sampler skips any .npz that already exists, so overwrite_existing on its
     # own would leave stale files in place.
     stale = sorted(class_dir.glob("*.npz")) + sorted(class_dir.glob("*.stl"))
     if stale:
-        log(f"Removendo {len(stale)} arquivo(s) antigo(s) de {class_dir.name}")
+        log(f"Removing {len(stale)} stale file(s) from {class_dir.name}")
         for path in stale:
             path.unlink()
 
@@ -208,7 +208,7 @@ def make_dataset(
     # meshes.
     sampler.add_class([_copy_geometry(m) for m in meshes], class_name)
 
-    log("Amostrando... (a parte demorada)")
+    log("Sampling... (the slow part)")
     started = time.perf_counter()
     sampler.process_geometries(
         n_samples=int(n_samples),
@@ -217,13 +217,13 @@ def make_dataset(
         scale=True,
         n_workers=0,
     )
-    log(f"Amostragem concluida em {time.perf_counter() - started:.1f} s")
+    log(f"Sampling finished in {time.perf_counter() - started:.1f} s")
 
     sampler.write_json(split_path.name)
-    log(f"Split escrito em {split_path}")
+    log(f"Split written to {split_path}")
 
     n_instances = len(list(class_dir.glob("*.npz")))
-    log(f"Pronto: {n_instances} instancia(s) em {dataset_dir}")
+    log(f"Done: {n_instances} instance(s) in {dataset_dir}")
     return {
         "dataset_dir": str(dataset_dir),
         "split_path": str(split_path),
@@ -242,12 +242,12 @@ def validate_dataset(dataset_dir, log=print):
     dataset_dir : str or pathlib.Path
         A ``<data_root>/SdfSamples/<dataset_name>`` folder.
     log : callable, default print
-        Receives short Portuguese progress lines.
+        Receives short progress lines.
 
     Returns
     -------
     dict
-        ``instances`` (one dict per .npz), ``problems`` (Portuguese strings) and
+        ``instances`` (one dict per .npz), ``problems`` and
         ``phi_all`` (subsampled phi values, for a histogram).
     """
     dataset_dir = pathlib.Path(dataset_dir)
@@ -257,11 +257,11 @@ def validate_dataset(dataset_dir, log=print):
 
     files = sorted(dataset_dir.glob("**/*.npz"))
     if not files:
-        problems.append(f"Nenhum arquivo .npz encontrado em {dataset_dir}.")
+        problems.append(f"No .npz file found in {dataset_dir}.")
         log(problems[-1])
         return {"instances": [], "problems": problems, "phi_all": np.zeros(0)}
 
-    log(f"Validando {len(files)} instancia(s) em {dataset_dir}")
+    log(f"Validating {len(files)} instance(s) in {dataset_dir}")
     per_file_cap = max(1, PHI_SAMPLE_CAP // len(files))
 
     for path in files:
@@ -271,13 +271,13 @@ def validate_dataset(dataset_dir, log=print):
                 pos = _read_block(npz, "pos")
                 neg = _read_block(npz, "neg")
         except Exception as exc:
-            problems.append(f"{name}: arquivo ilegivel ({exc}).")
+            problems.append(f"{name}: unreadable file ({exc}).")
             log(problems[-1])
             continue
 
         if pos is None or neg is None:
             missing = "pos" if pos is None else "neg"
-            problems.append(f"{name}: falta o array '{missing}' no .npz.")
+            problems.append(f"{name}: array '{missing}' is missing from the .npz.")
             log(problems[-1])
             empty = np.zeros((0, 4))
             pos = empty if pos is None else pos
@@ -317,42 +317,42 @@ def validate_dataset(dataset_dir, log=print):
         )
 
         if n_total == 0:
-            problems.append(f"{name}: arquivo vazio, nenhuma amostra.")
+            problems.append(f"{name}: empty file, no samples.")
         elif n_neg == 0:
             problems.append(
-                f"{name}: nenhuma amostra interna (neg vazio). A geometria nunca "
-                "fechou volume - malha aberta ou sinal invertido."
+                f"{name}: no inside samples (neg is empty). The geometry never "
+                "enclosed a volume - open mesh or flipped sign."
             )
         elif n_pos == 0:
             problems.append(
-                f"{name}: nenhuma amostra externa (pos vazio). "
-                "Sinal provavelmente invertido."
+                f"{name}: no outside samples (pos is empty). "
+                "The sign is probably flipped."
             )
         elif not MIN_INSIDE_FRACTION <= inside_fraction <= MAX_INSIDE_FRACTION:
             problems.append(
-                f"{name}: razao dentro/fora muito desequilibrada "
-                f"({100 * inside_fraction:.1f}% dentro)."
+                f"{name}: inside/outside ratio badly unbalanced "
+                f"({100 * inside_fraction:.1f}% inside)."
             )
         if n_nan:
-            problems.append(f"{name}: {n_nan} linha(s) com NaN.")
+            problems.append(f"{name}: {n_nan} row(s) with NaN.")
         if len(finite):
             worst_xyz = float(np.abs(finite[:, :3]).max())
             if worst_xyz > 1.0 + XYZ_TOL:
                 problems.append(
-                    f"{name}: pontos fora do cubo unitario (|x| ate {worst_xyz:.2f}). "
-                    "O decoder so conhece [-1, 1]^3."
+                    f"{name}: points outside the unit cube (|x| up to {worst_xyz:.2f}). "
+                    "The decoder only knows [-1, 1]^3."
                 )
             worst_phi = max(abs(phi_min), abs(phi_max))
             if worst_phi > PHI_MAX_EXPECTED:
                 problems.append(
-                    f"{name}: phi chega a {worst_phi:.2f}, "
-                    "a geometria parece nao normalizada."
+                    f"{name}: phi reaches {worst_phi:.2f}, "
+                    "the geometry looks unnormalized."
                 )
             elif worst_phi < 1e-6:
-                problems.append(f"{name}: phi e praticamente zero em todo lugar.")
+                problems.append(f"{name}: phi is essentially zero everywhere.")
 
         log(
-            f"  {name}: {n_pos} fora / {n_neg} dentro, "
+            f"  {name}: {n_pos} outside / {n_neg} inside, "
             f"phi [{phi_min:.3f}, {phi_max:.3f}], NaN {n_nan}"
         )
 
@@ -363,9 +363,9 @@ def validate_dataset(dataset_dir, log=print):
             phi_chunks.append(finite_phi[idx])
 
     if problems:
-        log(f"{len(problems)} problema(s) encontrado(s).")
+        log(f"{len(problems)} problem(s) found.")
     else:
-        log("Nenhum problema encontrado.")
+        log("No problems found.")
 
     phi_all = np.concatenate(phi_chunks) if phi_chunks else np.zeros(0)
     return {"instances": instances, "problems": problems, "phi_all": phi_all}

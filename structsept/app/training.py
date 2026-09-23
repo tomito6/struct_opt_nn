@@ -3,6 +3,9 @@
 Writes the specs.json a run needs, drives the DeepSDFStruct trainer on CPU while
 forwarding its log records to the GUI, and stores a metadata.json so that a run
 directory later describes itself to the model picker without being reloaded.
+
+What goes into specs.json is described field by field in
+``structsept.app.hyperparams``; this module only writes and reads the files.
 """
 
 import json
@@ -15,22 +18,13 @@ from pathlib import Path
 import DeepSDFStruct.deep_sdf.workspace as ws
 from DeepSDFStruct.deep_sdf.training import train_deep_sdf
 
+from structsept.app import hyperparams
+
 LIBRARY_LOGGER = "DeepSDFStruct"
-ARCH = "deep_sdf_decoder"
+ARCH = hyperparams.ARCH
 
 
-def write_specs(
-    run_dir,
-    latent_dim,
-    split_path,
-    data_source,
-    n_layers=6,
-    width=128,
-    num_epochs=200,
-    samples_per_scene=8000,
-    scenes_per_batch=10,
-    description="",
-):
+def write_specs(run_dir, split_path, data_source, hparams=None, **overrides):
     """Write <run_dir>/specs.json for a DeepSDF run and return its path.
 
     Parameters
@@ -38,75 +32,73 @@ def write_specs(
     run_dir : path-like
         Experiment directory. Created if missing; the trainer writes its
         checkpoints next to the specs file.
-    latent_dim : int
-        Latent dimension d, stored as CodeLength.
     split_path : path-like
         Split json listing the training instances.
     data_source : path-like
         Directory holding SdfSamples/<dataset>/<class>/*.npz.
-    n_layers, width : int
-        Decoder MLP shape, stored as dims = [width] * n_layers.
-    num_epochs, samples_per_scene, scenes_per_batch : int
-        Training budget. ``LogFrequency`` is derived from ``num_epochs`` so the
-        last epoch always lands in ModelParameters/latest.pth.
-    description : str
-        Free text; a default is generated when empty.
+    hparams : dict, optional
+        A hyperparameter set as described by ``structsept.app.hyperparams``.
+        Missing keys take their defaults, so ``None`` writes the default run.
+    **overrides
+        Individual hyperparameters on top of ``hparams``, by their
+        ``hyperparams.FIELDS`` key - ``latent_dim=2, num_epochs=30``.
+
+    Raises
+    ------
+    ValueError
+        When the set has an error-level problem (``hyperparams.validate``):
+        the trainer would crash on it minutes in, or finish with no checkpoint
+        to load, so it is refused before anything is written.
     """
+    hp = hyperparams.defaults()
+    hp.update(hparams or {})
+    unknown = sorted(set(overrides) - set(hyperparams.FIELD_BY_KEY))
+    if unknown:
+        raise TypeError(f"unknown hyperparameter(s): {', '.join(unknown)}")
+    hp.update(overrides)
+    problems = hyperparams.errors(hyperparams.validate(hp))
+    if problems:
+        raise ValueError(" ".join(p.message for p in problems))
+
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-
-    # The decoder prepends the input layer and appends the output layer, so the
-    # per-layer dropout/norm indices have to cover n_layers + 2 entries.
-    layer_indices = list(range(n_layers + 2))
-
-    # The trainer only writes ModelParameters/latest.pth when
-    # epoch % LogFrequency == 0, and its default of 10 silently leaves a short
-    # run with no loadable checkpoint at all.
-    log_frequency = next(f for f in (10, 5, 2, 1) if num_epochs % f == 0)
-
-    specs = {
-        "Description": description
-        or f"structsept run: d={latent_dim}, {n_layers}x{width}, {num_epochs} epochs",
-        "DataSource": str(data_source),
-        "NetworkArch": ARCH,
-        # The trainer resolves TrainSplit against DataSource, so an absolute
-        # path here is the only form that survives both layouts.
-        "TrainSplit": str(split_path),
-        "TestSplit": str(split_path),
-        "ReconstructionSplit": "",
-        "NetworkSpecs": {
-            "dims": [width] * n_layers,
-            "dropout": layer_indices,
-            "dropout_prob": 0.2,
-            "norm_layers": layer_indices,
-            "latent_in": [2],
-            "xyz_in_all": False,
-            "use_tanh": False,
-            "latent_dropout": False,
-            "weight_norm": True,
-            "geom_dimension": 3,
-        },
-        "CodeLength": latent_dim,
-        "NumEpochs": num_epochs,
-        "LogFrequency": log_frequency,
-        "SnapshotFrequency": max(1, num_epochs // 4),
-        "AdditionalSnapshots": [1],
-        "LearningRateSchedule": [
-            {"Type": "Step", "Initial": 0.0005, "Interval": 500, "Factor": 0.5},
-            {"Type": "Step", "Initial": 0.001, "Interval": 500, "Factor": 0.5},
-        ],
-        "SamplesPerScene": samples_per_scene,
-        "ScenesPerBatch": scenes_per_batch,
-        "DataLoaderThreads": 0,
-        "ClampingDistance": 0.1,
-        "CodeRegularization": True,
-        "CodeRegularizationLambda": 1e-4,
-        "CodeBound": 1.0,
-    }
-
+    specs = hyperparams.to_specs(hp, split_path, data_source)
     path = run_dir / ws.specifications_filename
     path.write_text(json.dumps(specs, indent=4), encoding="utf-8")
     return path
+
+
+def spec_sources(runs_dir):
+    """Every ``specs.json`` a hyperparameter set can be loaded from.
+
+    Local runs first, sorted by name like ``list_runs``, then the decoders
+    shipped with DeepSDFStruct - their specs are the reference settings of the
+    paper's test cases.
+
+    Returns
+    -------
+    list of (str, pathlib.Path)
+        Display label and specs.json path.
+    """
+    from DeepSDFStruct.pretrained_models import PRETRAINED_MODELS_DIR, PretrainedModels
+
+    sources = []
+    runs_dir = Path(runs_dir)
+    if runs_dir.is_dir():
+        for path in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
+            specs = path / ws.specifications_filename
+            if specs.is_file():
+                sources.append((f"run: {path.name}", specs))
+    for member in PretrainedModels:
+        specs = Path(PRETRAINED_MODELS_DIR) / member.value / ws.specifications_filename
+        if specs.is_file():
+            sources.append((f"shipped: {member.name}", specs))
+    return sources
+
+
+def read_specs(path):
+    """The dict stored in a specs.json, or ``{}`` when it cannot be read."""
+    return _read_json(path)
 
 
 class _CallbackHandler(logging.Handler):
@@ -128,9 +120,18 @@ def train(run_dir, data_source, log=print):
 
     Records emitted by the DeepSDFStruct logger are forwarded to ``log`` for the
     duration of the run so a GUI text box can follow the progress.
+
+    The run's ``seed`` is applied here, before the library is called, and not
+    only by the library: ``train_deep_sdf`` builds the decoder - drawing its
+    initial weights from the global torch RNG - a few lines *before* it seeds.
+    In a long-lived app process that RNG has been advanced by every earlier
+    run and every decoder the Explore tab built, so without this two runs with
+    identical settings start from different weights, and an A/B comparison of
+    one hyperparameter silently compares two initialisations as well.
     """
     run_dir = Path(run_dir)
     specs = ws.load_experiment_specifications(run_dir)
+    _seed_everything(specs.get("seed", 42))
 
     handler = _CallbackHandler(log)
     handler.setFormatter(logging.Formatter("%(levelname)s | %(message)s"))
@@ -155,6 +156,19 @@ def train(run_dir, data_source, log=print):
         "epochs": summary.get("num_epochs", specs.get("NumEpochs")),
         "seconds": seconds,
     }
+
+
+def _seed_everything(seed):
+    """Seed Python, NumPy and torch exactly as the trainer later does."""
+    import random
+
+    import numpy as np
+    import torch
+
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def write_metadata(run_dir, **info):
@@ -239,3 +253,36 @@ def _library_version():
         return version("DeepSDFStruct")
     except PackageNotFoundError:
         return None
+
+
+def read_progress(run_dir):
+    """Per-batch loss and last completed epoch of a run, or ``{}``.
+
+    The trainer reports epoch progress only through a tqdm bar, and its
+    per-batch ``logger.debug`` line is the wrong thing to parse, so progress is
+    read from the checkpoint it already writes: ``Logs.pth``, saved every
+    ``LogFrequency`` epochs by ``deep_sdf.training.save_logs``. That makes the
+    update cadence known - LogFrequency is 10/5/2/1 unless set in the
+    hyperparameter window - and costs one small ``torch.load``.
+
+    Returns ``{"loss": [...], "epoch": int}``; an empty dict while the first
+    checkpoint has not been written or if the file is being rewritten as we
+    read it.
+    """
+    import torch
+
+    path = Path(run_dir) / ws.logs_filename
+    if not path.is_file():
+        return {}
+    try:
+        data = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception:
+        # a half-written file during save_logs; the next poll picks it up
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    loss = data.get("loss") or []
+    try:
+        return {"loss": [float(x) for x in loss], "epoch": int(data.get("epoch", 0))}
+    except (TypeError, ValueError):
+        return {}

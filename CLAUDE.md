@@ -32,7 +32,7 @@ code/                        <- VS Code workspace root (this folder)
 │   ├── plate_hole_params.py <- admissible (x_c, y_c, r) design space of that geometry
 │   ├── pointcloud_sdf.py    <- SDF from an unoriented point cloud (winding number)
 │   ├── fem.py               <- tetrahedral meshing + stiffness assembly (torch-fem)
-│   └── app/                 <- Tkinter app: sample -> train -> explore f_theta
+│   └── app/                 <- two Tkinter windows: explorer (main.py) + sdf_maker.py
 ├── experiments/             <- RUNNABLE ONE-OFFS. Nothing here may be imported
 │   └── IDEIAS.md            <- Portuguese notebook: queue of experiments and findings
 ├── tests/                   <- pytest; test_deepsdfstruct_env.py is the smoke test

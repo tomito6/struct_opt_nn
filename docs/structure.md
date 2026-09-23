@@ -43,8 +43,16 @@ code/                        <- VS Code workspace root
 │   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space
 │   ├── pointcloud_sdf.py        SDF from an unoriented point cloud
 │   ├── fem.py                   tetrahedral meshing + stiffness assembly
-│   └── app/                     Tkinter application
-│       ├── main.py                  GUI shell, worker threads
+│   └── app/                     Tkinter applications (two windows)
+│       ├── main.py                  shell: Explore + Train tabs
+│       ├── tab_explore.py           drive f_theta by moving control points
+│       ├── tab_train.py             dataset -> decoder, loss curve, run list
+│       ├── hparam_window.py         the "All hyperparameters..." window
+│       ├── hyperparams.py           every specs.json key: schema, checks, I/O
+│       ├── sdf_maker.py             separate window: meshes -> dataset
+│       ├── theme.py                 ttk styles, palette, matplotlib rcParams
+│       ├── widgets.py               cards, log boxes, control-point grid
+│       ├── runtime.py               worker threads, queue, debounce
 │       ├── datasets.py              meshes -> SdfSamples dataset  (step 1)
 │       ├── training.py              drives the DeepSDF trainer    (step 2)
 │       ├── models.py                lattice assembly + evaluation (steps 3-4)
@@ -59,10 +67,13 @@ code/                        <- VS Code workspace root
 │   └── outputs/                     what those four scripts write (gitignored)
 │
 ├── tests/
-│   └── test_deepsdfstruct_env.py    offline smoke test of env + core API
+│   ├── test_deepsdfstruct_env.py    offline smoke test of env + core API
+│   ├── test_app_explore.py          Explore tab regressions (off-screen Tk)
+│   └── test_app_hyperparams.py      hyperparameter schema, trainer, window
 │
 ├── docs/
 │   ├── structure.md                 this file
+│   ├── gui.md                       the app, panel by panel, tied to the paper
 │   ├── paper_context.md             the reference paper, distilled
 │   ├── context-maintenance.md       procedure for keeping CLAUDE.md current
 │   ├── context-log.md               one entry per maintenance pass
@@ -106,8 +117,11 @@ uv run python experiments/plate_with_hole_stiffness.py --solid --resolution 8
 uv run python -m structsept.plate_with_hole --hole-radius 0.3
 uv run python -m structsept.plate_hole_params --n 128 --plot
 
-# the GUI
+# the GUI: explorer (Explore + Train)
 uv run python -m structsept.app.main
+
+# the GUI: dataset builder, a separate window
+uv run python -m structsept.app.sdf_maker
 
 # tests
 uv run pytest tests/ -v
@@ -132,8 +146,8 @@ down in `experiments/IDEIAS.md` rather than relying on the file surviving.
 
 ## Naming conventions
 
-- Folder and module names are **English**; the `IDEIAS.md` notebook and the
-  app's user-facing strings stay Portuguese.
+- Folder names, module names and the app's user-facing strings are **English**.
+  `IDEIAS.md` stays Portuguese; it is a lab notebook, not an interface.
 - Modules are named for the object they describe (`plate_with_hole`, `fem`),
   not for the action (`build_plate`, `run_fem`).
 - Experiment scripts read as a sentence about what they produce:

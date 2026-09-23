@@ -214,3 +214,172 @@ def surface_mesh(sdf, n_base=8):
         device=device,
     )
     return mesh.to_trimesh()
+
+
+# --------------------------------------------------------------------------- #
+# control-point geometry
+# --------------------------------------------------------------------------- #
+
+
+def flat_index(i, j, k, n_ctrl) -> int:
+    """Row of ``control_points`` holding the control point at grid (i, j, k).
+
+    splinepy stores the control net with x running fastest, so the flat index
+    is ``i + nx * (j + ny * k)``. Verified against
+    ``build_parameter_spline([1,1,1], ...)`` on a non-cubic grid.
+    """
+    nx, ny, _ = (int(n) for n in n_ctrl)
+    return int(i) + nx * (int(j) + ny * int(k))
+
+
+def control_point_position(i, j, k, n_ctrl) -> tuple[float, float, float]:
+    """Where control point (i, j, k) sits in the domain, in [0, 1]^3.
+
+    The latent spline is clamped and degree 1, so its Greville abscissae are
+    the knots themselves: control point (i, j, k) sits at
+    ``(i/(nx-1), j/(ny-1), k/(nz-1))``. The lattice domain is the unit cube
+    because :func:`build_lattice` passes no bounds, so these are the same
+    coordinates the slice panels are drawn in.
+    """
+    out = []
+    for index, count in zip((i, j, k), n_ctrl):
+        count = int(count)
+        out.append(float(index) / (count - 1) if count > 1 else 0.0)
+    return tuple(out)
+
+
+class LatentNeighbors:
+    """Nearest-neighbour index over a decoder's trained latent codes.
+
+    Built once when a decoder is loaded, because both halves of the query are
+    expensive to redo on every redraw: the dense
+    ``(n_cp, n_trained, d)`` difference is 1.1 GB for Primitives2D (19079
+    codes of width 16 against 216 control points), and building a k-d tree in
+    16 dimensions costs most of a second on its own.
+    """
+
+    def __init__(self, trained):
+        self.trained = np.asarray(trained, dtype=np.float64)
+        self._tree = None
+        if self.trained.ndim == 2 and self.trained.shape[0]:
+            try:
+                from scipy.spatial import cKDTree
+
+                self._tree = cKDTree(self.trained)
+            except Exception:
+                self._tree = None
+
+    def worst_distance(self, control_points) -> float:
+        """Distance from the *furthest* control point to its closest code."""
+        cps = np.asarray(control_points, dtype=np.float64)
+        if self.trained.size == 0 or cps.size == 0:
+            return float("nan")
+        if self._tree is not None:
+            return float(np.max(self._tree.query(cps, k=1)[0]))
+        chunk = max(
+            1, int(4_000_000 // max(self.trained.shape[0] * self.trained.shape[1], 1))
+        )
+        worst = 0.0
+        for start in range(0, cps.shape[0], chunk):
+            block = cps[start : start + chunk]
+            diff = block[:, None, :] - self.trained[None, :, :]
+            worst = max(
+                worst, float(np.max(np.min(np.linalg.norm(diff, axis=2), axis=1)))
+            )
+        return worst
+
+
+def nearest_trained_distance(trained, control_points) -> float:
+    """Worst distance from a control point to the closest trained latent code.
+
+    A per-component min/max box says nothing about the holes inside it: the 20
+    codes of ``RoundCross`` span [-1, 1] with a 0.4-wide gap in the middle, and
+    the mean of them - the app's starting design - falls straight into it. This
+    number sees that; the box test does not.
+
+    Convenience wrapper; callers that ask repeatedly should keep a
+    :class:`LatentNeighbors` instead of paying for the index every time.
+    """
+    return LatentNeighbors(trained).worst_distance(control_points)
+
+
+def largest_gap(values) -> tuple[float, float, float]:
+    """Widest empty interval between consecutive sorted ``values``.
+
+    Returns ``(width, lo, hi)``. Used to mark the unsupervised stretch of a
+    latent axis on the coverage strip.
+    """
+    v = np.unique(np.asarray(values, dtype=np.float64).ravel())
+    if v.size < 2:
+        return 0.0, float("nan"), float("nan")
+    gaps = np.diff(v)
+    idx = int(np.argmax(gaps))
+    return float(gaps[idx]), float(v[idx]), float(v[idx + 1])
+
+
+# --------------------------------------------------------------------------- #
+# extra field evaluations
+# --------------------------------------------------------------------------- #
+
+
+def volume_fraction(sdf, bounds=None, res=20) -> float:
+    """Fraction of the domain with ``f_theta < 0``, on a regular grid.
+
+    A coarse Monte-Carlo-free estimate of ``V(lambda_hat)`` - the quantity the
+    paper constrains. ``res=20`` is a deliberate compromise: 8000 points cost
+    about 100 ms on CPU - fine once a drag has settled, too slow during one.
+
+    The samples are **cell centres**, not grid nodes. A node grid puts
+    ``1 - ((res-2)/res)**3`` of its points - 27% at res=20 - exactly on the
+    domain faces, and ``CappedBorderSDF`` forces ``phi >= 0`` there, so a node
+    grid reports every lattice as roughly a third emptier than it is. Cell
+    centres are also the correct midpoint rule for a volume integral.
+    """
+    bounds = _as_bounds(bounds, sdf)
+    device = sdf.get_device() if hasattr(sdf, "get_device") else "cpu"
+    dtype = sdf.get_dtype() if hasattr(sdf, "get_dtype") else torch.float32
+    res = max(int(res), 1)
+    axes = []
+    for d in range(3):
+        lo, hi = bounds[0, d], bounds[1, d]
+        step = (hi - lo) / res
+        axes.append(lo + step * (np.arange(res) + 0.5))
+    grid = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    pts = torch.as_tensor(grid, dtype=dtype, device=device)
+    with torch.no_grad():
+        values = sdf(pts)
+    return float((values < 0).double().mean().item())
+
+
+def unit_cell_sdf(model):
+    """A decoder wrapper for previewing one microtile, separate from a lattice.
+
+    ``LatticeSDFStruct`` writes one latent vector *per query point* into its
+    microtile and leaves it there, so reusing that same wrapper for a different
+    query count raises a shape mismatch. The weights are shared; only the
+    wrapper is new.
+    """
+    return SDFfromDeepSDF(model)
+
+
+def eval_cell_slice(cell_sdf, latent, z=0.0, res=64) -> np.ndarray:
+    """``f_theta(lambda, .)`` on a z-slice of the bare unit cube [-1, 1]^3.
+
+    This is the shape a single latent vector encodes, before the
+    transformation function tiles it. Without it a latent value is just a
+    number the user has never seen a picture of.
+    """
+    device = cell_sdf.get_device() if hasattr(cell_sdf, "get_device") else "cpu"
+    dtype = cell_sdf.get_dtype() if hasattr(cell_sdf, "get_dtype") else torch.float32
+    latent = np.asarray(latent, dtype=np.float64).ravel()
+    cell_sdf.latvec = None
+    cell_sdf.set_latent_vec(torch.as_tensor(latent, dtype=dtype, device=device))
+    xs = np.linspace(-1.0, 1.0, int(res))
+    grid_x, grid_y = np.meshgrid(xs, xs)
+    pts = np.stack(
+        [grid_x.ravel(), grid_y.ravel(), np.full(grid_x.size, float(z))], axis=1
+    )
+    tensor = torch.as_tensor(pts, dtype=dtype, device=device)
+    with torch.no_grad():
+        values = cell_sdf(tensor)
+    return values.detach().cpu().numpy().reshape(int(res), int(res)).astype(np.float64)
