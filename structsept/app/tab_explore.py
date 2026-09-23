@@ -431,7 +431,9 @@ def _build_footer(st, parent, palette):
 
 
 def refresh_models(st):
-    entries = models.list_models(st["ex_runs_dir"])
+    # Only unit-cell decoders: a planar (2-D) one cannot be tiled into a
+    # lattice, and lives on the Explore 2-D tab instead.
+    entries = models.list_models(st["ex_runs_dir"], geom_dimension=3)
     labels = {}
     for entry in entries:
         d = "?" if entry.latent_dim is None else entry.latent_dim

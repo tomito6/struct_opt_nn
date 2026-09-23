@@ -1,9 +1,10 @@
 """GUI shell of the structsept app.
 
-Two tabs over the online half of the pipeline: train a DeepSDF decoder on a
+Three tabs over the online half of the pipeline: train a DeepSDF decoder on a
 dataset that already exists, then explore ``f_theta(lambda(x), x)`` by moving
 the latent B-spline control points - the design variables of the optimization
-the paper describes.
+the paper describes. A decoder trained on planar (2-D) samples describes a
+whole shape rather than a unit cell, and gets its own explorer, Explore 2-D.
 
 Building the dataset itself lives in its own window,
 ``structsept.app.sdf_maker``: it is a once-in-a-while job, and everything here
@@ -32,10 +33,15 @@ matplotlib.use("Agg")
 from structsept.app import (  # noqa: E402
     runtime,
     tab_explore,
+    tab_explore2d,
     tab_train,
     theme,
     widgets,
 )
+
+# Debounced jobs are stored under "<tab prefix>_job_<name>"; shutdown cancels
+# every key with one of these prefixes.
+JOB_PREFIXES = ("ex_job_", "e2_job_", "tr_job_")
 
 # Datasets and training runs are large, regenerable and gitignored, so they
 # live at the repo root rather than inside the package directory.
@@ -45,7 +51,7 @@ RUNS_DIR = REPO_ROOT / "runs"
 
 
 def build_app():
-    """Build the Tk root with both tabs wired up, without starting the loop."""
+    """Build the Tk root with every tab wired up, without starting the loop."""
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -79,11 +85,20 @@ def build_app():
     st["notebook"] = notebook
 
     explore_tab = ttk.Frame(notebook, padding=10)
+    explore2d_tab = ttk.Frame(notebook, padding=10)
     train_tab = ttk.Frame(notebook, padding=10)
     notebook.add(explore_tab, text="Explore")
+    notebook.add(explore2d_tab, text="Explore 2-D")
     notebook.add(train_tab, text="Train")
+    # by name, so nothing depends on the order of the tabs
+    st["tab_frames"] = {
+        "explore": explore_tab,
+        "explore2d": explore2d_tab,
+        "train": train_tab,
+    }
 
     tab_explore.build(st, explore_tab, RUNS_DIR)
+    tab_explore2d.build(st, explore2d_tab, RUNS_DIR)
     tab_train.build(st, train_tab, DATA_ROOT, RUNS_DIR)
 
     if palette["_errors"]:
@@ -111,9 +126,7 @@ def _shutdown(st, root):
     for key, value in list(st.items()):
         # every debounced job is stored as "<tab>_job_<name>"; matching the
         # prefix means a new one does not have to be added here
-        if value is not None and (
-            key == "poll_job" or key.startswith(("ex_job_", "tr_job_"))
-        ):
+        if value is not None and (key == "poll_job" or key.startswith(JOB_PREFIXES)):
             try:
                 root.after_cancel(value)
             except tk.TclError:

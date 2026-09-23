@@ -11,7 +11,8 @@ nothing to do with the design question being asked.
 
 This module decides which triples are admissible and hands back a set of them.
 It builds no geometry, loads no network and imports nothing from
-``DeepSDFStruct``: it is the step *before* ``structsept.plate_with_hole``.
+``DeepSDFStruct``: it is the step *before* :mod:`datagen.plate_hole_sdf`, which
+turns each triple into signed-distance training samples.
 
 The admissibility condition
 ---------------------------
@@ -74,13 +75,13 @@ Three independent reasons, any one of which is sufficient:
 
 Examples
 --------
-    uv run python -m structsept.plate_hole_params
-    uv run python -m structsept.plate_hole_params --n 128 --margin 0.05 --plot
-    uv run python -m structsept.plate_hole_params --margin 0.05 --design-margin 0.1
+    uv run python -m datagen.plate_hole_params
+    uv run python -m datagen.plate_hole_params --n 128 --margin 0.05 --plot
+    uv run python -m datagen.plate_hole_params --margin 0.05 --design-margin 0.1
 
-    from structsept.plate_hole_params import PlateHoleSpace
+    from datagen.plate_hole_params import PlateHoleSpace
 
-    space = PlateHoleSpace(margin=0.1, r_min=0.06)
+    space = PlateHoleSpace(margin=0.1, r_min=0.07)
     params = space.sample(64, method="sobol", seed=0)
     for name, x_c, y_c, r in params.rows():
         ...  # build one geometry per row
@@ -127,8 +128,8 @@ class PlateHoleSpace:
     """The admissible ``(x_c, y_c, r)`` triples for a plate with one hole.
 
     All lengths are in the same unit and in the plate's own frame, whose origin
-    is the lower-left corner. Nothing here knows about the ``[-1, 1]^3`` cube the
-    DeepSDF sampler works in; see the note at the end of :meth:`summary`.
+    is the lower-left corner. Nothing here knows about the ``[-1, 1]^d`` training
+    frame; :class:`datagen.plate_hole_sdf.PlateFrame` maps the plate onto it.
 
     Parameters
     ----------
@@ -504,9 +505,10 @@ class HoleParameters:
     def names(self):
         """One DeepSDF instance name per triple, unique and sortable.
 
-        ``SDFSampler`` writes ``<instance>.npz`` and lists the same string in
-        the split json, so the name has to survive a file system: decimal points
-        become ``p``.
+        :func:`datagen.dataset.write_instance` writes ``<instance>.npz`` and
+        :func:`datagen.dataset.write_split` lists the same string in the split
+        json, so the name has to survive a file system: decimal points become
+        ``p``.
         """
         return [
             f"hole_x{x:.4f}_y{y:.4f}_r{rad:.4f}".replace(".", "p")

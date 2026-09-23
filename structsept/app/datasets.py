@@ -4,6 +4,12 @@ Turns a folder of meshes into an SdfSamples dataset that ``train_deep_sdf`` can
 read, and audits a dataset that already exists on disk. This is step 1 of the
 offline pipeline: sample points around each geometry and store the signed
 distances. Everything downstream inherits the quality of what is written here.
+
+Datasets are 3-D (rows ``x, y, z, phi``) when they come from meshes, and 2-D
+(rows ``x, y, phi``) when ``datagen`` samples a planar shape. The dimension is
+read from the data itself - a ``dataset.json`` manifest when there is one, the
+width of the stored rows otherwise - and it decides the decoder the Train tab
+builds.
 """
 
 import json
@@ -17,6 +23,9 @@ from DeepSDFStruct.sampling import SDFSampler
 
 SDF_SAMPLES_DIR = "SdfSamples"
 SPLITS_DIR = "splits"
+# Written by datagen next to the class folders; see datagen/dataset.py.
+MANIFEST_NAME = "dataset.json"
+DEFAULT_GEOM_DIMENSION = 3
 
 # Surface samples are pushed off the surface along the normal with a Gaussian of
 # std up to 0.05, so a few sigma past the normalized [-1, 1] box is expected.
@@ -44,7 +53,8 @@ def list_datasets(data_root):
     -------
     list of dict
         One dict per dataset with keys ``name``, ``path``, ``n_instances``,
-        ``classes`` and ``split`` (path to the split json, or None).
+        ``classes``, ``split`` (path to the split json, or None) and
+        ``geom_dimension`` (2 or 3, see :func:`geom_dimension`).
     """
     data_root = pathlib.Path(data_root)
     samples_root = data_root / SDF_SAMPLES_DIR
@@ -63,9 +73,36 @@ def list_datasets(data_root):
                 "n_instances": n_instances,
                 "classes": classes,
                 "split": str(split_path) if split_path.is_file() else None,
+                "geom_dimension": geom_dimension(dataset_dir),
             }
         )
     return datasets
+
+
+def geom_dimension(dataset_dir) -> int:
+    """Coordinates per sample in a dataset: 2 for ``(x, y, phi)`` rows, else 3.
+
+    The manifest ``datagen`` writes says it outright. Without one (the SDF
+    maker's datasets), the first readable ``.npz`` answers by the width of its
+    rows. An empty or unreadable dataset counts as 3-D, the historical default.
+    """
+    dataset_dir = pathlib.Path(dataset_dir)
+    try:
+        with open(dataset_dir / MANIFEST_NAME, "r", encoding="utf-8") as fh:
+            value = int(json.load(fh)["geom_dimension"])
+        if value in (2, 3):
+            return value
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    for path in sorted(dataset_dir.glob("*/*.npz"))[:1]:
+        try:
+            with np.load(path) as npz:
+                block = _read_block(npz, "pos")
+            if block is not None and block.shape[1] in (3, 4):
+                return int(block.shape[1] - 1)
+        except Exception:
+            pass
+    return DEFAULT_GEOM_DIMENSION
 
 
 def load_meshes(folder, ext="stl", log=print):
@@ -236,6 +273,8 @@ def validate_dataset(dataset_dir, log=print):
 
     Checks every ``.npz`` for missing inside samples, NaNs, points outside the
     unit cube, an unnormalized phi range and a badly skewed inside/outside ratio.
+    Works for 2-D rows ``(x, y, phi)`` and 3-D rows ``(x, y, z, phi)`` alike,
+    and flags a dataset whose files disagree on which one they are.
 
     Parameters
     ----------
@@ -263,6 +302,7 @@ def validate_dataset(dataset_dir, log=print):
 
     log(f"Validating {len(files)} instance(s) in {dataset_dir}")
     per_file_cap = max(1, PHI_SAMPLE_CAP // len(files))
+    widths = {}
 
     for path in files:
         name = path.stem
@@ -279,25 +319,44 @@ def validate_dataset(dataset_dir, log=print):
             missing = "pos" if pos is None else "neg"
             problems.append(f"{name}: array '{missing}' is missing from the .npz.")
             log(problems[-1])
-            empty = np.zeros((0, 4))
+            present = neg if pos is None else pos
+            empty = np.zeros((0, 4 if present is None else present.shape[1]))
             pos = empty if pos is None else pos
             neg = empty if neg is None else neg
+
+        if pos.shape[1] != neg.shape[1]:
+            problems.append(
+                f"{name}: 'pos' rows have {pos.shape[1]} columns and 'neg' rows "
+                f"{neg.shape[1]}; the two arrays describe different things."
+            )
+            log(problems[-1])
+            continue
+        width = pos.shape[1]
+        if width not in (3, 4):
+            problems.append(
+                f"{name}: rows have {width} columns; expected (x, y, phi) or "
+                "(x, y, z, phi)."
+            )
+            log(problems[-1])
+            continue
+        widths.setdefault(width, []).append(name)
+        dim = width - 1
 
         rows = np.vstack([pos, neg])
         n_pos, n_neg = len(pos), len(neg)
         n_total = n_pos + n_neg
-        phi = rows[:, 3]
+        phi = rows[:, -1]
         n_nan = int(np.isnan(rows).any(axis=1).sum())
         finite = rows[np.isfinite(rows).all(axis=1)]
         inside_fraction = n_neg / n_total if n_total else 0.0
 
         if len(finite):
-            xyz_min = finite[:, :3].min(axis=0)
-            xyz_max = finite[:, :3].max(axis=0)
-            phi_min = float(finite[:, 3].min())
-            phi_max = float(finite[:, 3].max())
+            xyz_min = finite[:, :dim].min(axis=0)
+            xyz_max = finite[:, :dim].max(axis=0)
+            phi_min = float(finite[:, -1].min())
+            phi_max = float(finite[:, -1].max())
         else:
-            xyz_min = xyz_max = np.full(3, np.nan)
+            xyz_min = xyz_max = np.full(dim, np.nan)
             phi_min = phi_max = float("nan")
 
         instances.append(
@@ -336,11 +395,11 @@ def validate_dataset(dataset_dir, log=print):
         if n_nan:
             problems.append(f"{name}: {n_nan} row(s) with NaN.")
         if len(finite):
-            worst_xyz = float(np.abs(finite[:, :3]).max())
+            worst_xyz = float(np.abs(finite[:, :dim]).max())
             if worst_xyz > 1.0 + XYZ_TOL:
                 problems.append(
                     f"{name}: points outside the unit cube (|x| up to {worst_xyz:.2f}). "
-                    "The decoder only knows [-1, 1]^3."
+                    f"The decoder only knows [-1, 1]^{dim}."
                 )
             worst_phi = max(abs(phi_min), abs(phi_max))
             if worst_phi > PHI_MAX_EXPECTED:
@@ -362,13 +421,29 @@ def validate_dataset(dataset_dir, log=print):
             idx = np.random.choice(len(finite_phi), size=take, replace=False)
             phi_chunks.append(finite_phi[idx])
 
+    if len(widths) > 1:
+        counts = ", ".join(
+            f"{len(names)} with {w - 1}-D rows" for w, names in sorted(widths.items())
+        )
+        problems.append(
+            f"The files disagree on the geometry dimension ({counts}); one "
+            "decoder cannot train on both."
+        )
+        log(problems[-1])
+
     if problems:
         log(f"{len(problems)} problem(s) found.")
     else:
         log("No problems found.")
 
     phi_all = np.concatenate(phi_chunks) if phi_chunks else np.zeros(0)
-    return {"instances": instances, "problems": problems, "phi_all": phi_all}
+    dims = sorted(w - 1 for w in widths)
+    return {
+        "instances": instances,
+        "problems": problems,
+        "phi_all": phi_all,
+        "geom_dimension": dims[0] if len(dims) == 1 else None,
+    }
 
 
 def read_split(split_path):
@@ -382,8 +457,15 @@ def _copy_geometry(geom):
 
 
 def _read_block(npz, key):
-    """Read a pos/neg block as (N, 4), tolerating the legacy '<key>.npy' name."""
+    """Read a pos/neg block as ``(N, width)``, tolerating the legacy '<key>.npy'.
+
+    The width is whatever the file holds - 4 for ``(x, y, z, phi)``, 3 for
+    ``(x, y, phi)``. Forcing a reshape to 4 columns used to scramble 2-D rows
+    into fake 3-D ones whenever the element count happened to divide by 4.
+    Only a flat array, which carries no width, is read as 4 columns.
+    """
     for candidate in (key, key + ".npy"):
         if candidate in npz:
-            return np.asarray(npz[candidate], dtype=np.float64).reshape(-1, 4)
+            block = np.asarray(npz[candidate], dtype=np.float64)
+            return block if block.ndim == 2 else block.reshape(-1, 4)
     return None

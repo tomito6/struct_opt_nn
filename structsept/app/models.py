@@ -4,10 +4,18 @@ Online stage of the pipeline (steps 3-4 of the paper's method): pick a trained
 decoder, interpolate its latent vector over the domain with a B-spline whose
 control points are the design variables, tile the unit cell, and evaluate
 f_theta(lambda(x), x) either as a 2D slice or as a surface mesh.
+
+Decoders trained on 2-D samples (``geom_dimension`` 2 in their specs, e.g. the
+``datagen`` plate with a hole) describe a whole shape in the plane rather than
+a unit cell, so they skip the lattice entirely; the last section of this module
+serves the Explore 2-D tab: the field on the plane, the training shapes behind
+each latent code, and how well the codes pin down the parameters that made
+those shapes.
 """
 
 from __future__ import annotations
 
+import csv
 import json
 from collections import namedtuple
 from pathlib import Path
@@ -26,18 +34,41 @@ from DeepSDFStruct.pretrained_models import (
     get_model,
 )
 
-ModelEntry = namedtuple("ModelEntry", "name source ref latent_dim n_latents")
+# geom_dimension: how many coordinates the decoder takes next to the latent
+# code - 3 for the unit-cell decoders of the paper, 2 for a planar shape.
+ModelEntry = namedtuple(
+    "ModelEntry",
+    "name source ref latent_dim n_latents geom_dimension",
+    defaults=(3,),
+)
 
 _CHECKPOINT = "latest"
+
+
+def _read_json(path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _read_code_length(run_dir: Path) -> int | None:
     """Latent dimension straight from specs.json, without loading any weights."""
     try:
-        with open(run_dir / "specs.json", "r", encoding="utf-8") as f:
-            return int(json.load(f)["CodeLength"])
-    except (OSError, KeyError, ValueError, TypeError):
+        return int(_read_json(run_dir / "specs.json")["CodeLength"])
+    except (KeyError, ValueError, TypeError):
         return None
+
+
+def _read_geom_dimension(run_dir: Path) -> int:
+    """Coordinates per query point, from specs.json; 3 when it does not say."""
+    network = _read_json(run_dir / "specs.json").get("NetworkSpecs") or {}
+    try:
+        return int(network.get("geom_dimension", 3))
+    except (ValueError, TypeError):
+        return 3
 
 
 def _count_latents(run_dir: Path) -> int:
@@ -60,8 +91,16 @@ def _is_run_dir(path: Path) -> bool:
     ).is_file()
 
 
-def list_models(runs_dir) -> list[ModelEntry]:
-    """Every usable decoder: the shipped pretrained ones plus local training runs."""
+def list_models(runs_dir, geom_dimension=None) -> list[ModelEntry]:
+    """Every usable decoder: the shipped pretrained ones plus local training runs.
+
+    Parameters
+    ----------
+    runs_dir : path-like
+    geom_dimension : int, optional
+        Keep only decoders taking this many coordinates. The lattice explorer
+        asks for 3, the planar one for 2; ``None`` lists everything.
+    """
     entries = []
     for member in PretrainedModels:
         run_dir = Path(PRETRAINED_MODELS_DIR) / member.value
@@ -72,6 +111,7 @@ def list_models(runs_dir) -> list[ModelEntry]:
                 ref=member,
                 latent_dim=_read_code_length(run_dir),
                 n_latents=_count_latents(run_dir),
+                geom_dimension=_read_geom_dimension(run_dir),
             )
         )
 
@@ -87,8 +127,11 @@ def list_models(runs_dir) -> list[ModelEntry]:
                     ref=str(run_dir),
                     latent_dim=_read_code_length(run_dir),
                     n_latents=_count_latents(run_dir),
+                    geom_dimension=_read_geom_dimension(run_dir),
                 )
             )
+    if geom_dimension is not None:
+        entries = [e for e in entries if e.geom_dimension == int(geom_dimension)]
     return entries
 
 
@@ -269,6 +312,18 @@ class LatentNeighbors:
             except Exception:
                 self._tree = None
 
+    def nearest(self, point) -> tuple[int, float]:
+        """Index of the trained code closest to ``point``, and its distance."""
+        point = np.asarray(point, dtype=np.float64).ravel()
+        if self.trained.size == 0:
+            return -1, float("nan")
+        if self._tree is not None:
+            dist, index = self._tree.query(point, k=1)
+            return int(index), float(dist)
+        dists = np.linalg.norm(self.trained - point[None, :], axis=1)
+        index = int(np.argmin(dists))
+        return index, float(dists[index])
+
     def worst_distance(self, control_points) -> float:
         """Distance from the *furthest* control point to its closest code."""
         cps = np.asarray(control_points, dtype=np.float64)
@@ -383,3 +438,213 @@ def eval_cell_slice(cell_sdf, latent, z=0.0, res=64) -> np.ndarray:
     with torch.no_grad():
         values = cell_sdf(tensor)
     return values.detach().cpu().numpy().reshape(int(res), int(res)).astype(np.float64)
+
+
+# --------------------------------------------------------------------------- #
+# whole-shape 2-D decoders (Explore 2-D tab)
+# --------------------------------------------------------------------------- #
+
+# The planar decoders are trained on [-1, 1]^2, the same box DeepSDF uses in 3-D.
+PLANE_BOUNDS = np.array([[-1.0, -1.0], [1.0, 1.0]])
+
+
+def geom_dimension(model) -> int:
+    """Coordinates per query point of a loaded decoder (2 or 3)."""
+    return int(getattr(model._decoder, "geom_dimension", 3))
+
+
+def decode_2d(model, latent, points) -> np.ndarray:
+    """``f_theta(lambda, p)`` at planar points ``(n, 2)`` for one latent code.
+
+    Builds the decoder input by hand - code repeated per point, then the
+    coordinates - which is the layout ``DeepSDFDecoder`` reads, for any
+    ``geom_dimension``.
+    """
+    param = next(model._decoder.parameters())
+    pts = torch.as_tensor(np.asarray(points), dtype=param.dtype, device=param.device)
+    lat = torch.as_tensor(
+        np.asarray(latent, dtype=np.float64).ravel(),
+        dtype=param.dtype,
+        device=param.device,
+    )
+    with torch.no_grad():
+        values = model._decoder(torch.cat([lat.expand(len(pts), -1), pts], dim=1))
+    return values.detach().cpu().numpy().reshape(-1).astype(np.float64)
+
+
+def eval_field_2d(model, latent, res=128) -> np.ndarray:
+    """``f_theta(lambda, .)`` on a ``res x res`` node grid over [-1, 1]^2.
+
+    Laid out ``(row=y, col=x)`` for ``imshow(origin="lower")``, the same
+    convention as :func:`eval_sdf_slice`, so ``viz.draw_sdf_slice`` draws it.
+    """
+    res = int(res)
+    xs = np.linspace(PLANE_BOUNDS[0, 0], PLANE_BOUNDS[1, 0], res)
+    grid_x, grid_y = np.meshgrid(xs, xs)
+    points = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
+    return decode_2d(model, latent, points).reshape(res, res)
+
+
+def run_shapes(run_dir) -> dict:
+    """The training shapes behind a run, one per latent code, in code order.
+
+    The order comes from ``LatentCodes/latent_code_data_map.json``, which the
+    trainer writes with the latent index of every ``.npz``; runs without it
+    fall back to the split, which is the order the trainer read. When the
+    dataset folder carries a ``params.csv`` (``datagen`` writes one), its rows
+    are joined on the instance name: the parameters that generated each shape,
+    which the decoder itself never saw.
+
+    Returns
+    -------
+    dict
+        ``names`` and ``npz`` (lists, code order), ``dataset_dir`` (Path or
+        None), ``manifest`` (dict, empty without ``dataset.json``), ``params``
+        (``{column: array}`` aligned with ``names``, NaN where a row is
+        missing) and ``param_names`` (the columns worth showing first).
+    """
+    run_dir = Path(run_dir)
+    specs = _read_json(run_dir / "specs.json")
+    source = Path(specs.get("DataSource", "."))
+
+    npz = []
+    entries = _read_json(run_dir / "LatentCodes" / "latent_code_data_map.json")
+    entries = entries.get("latent_codes") or []
+    if entries:
+        for entry in sorted(entries, key=lambda e: int(e["latent_index"])):
+            path = Path(entry.get("npz_filename", ""))
+            if not path.is_file() and entry.get("relative_npz_filename"):
+                # the absolute path is from the machine that trained; the
+                # relative one survives a moved or re-cloned repo
+                rel = Path(entry["relative_npz_filename"].replace("\\", "/"))
+                path = source / "SdfSamples" / rel
+            npz.append(path)
+    else:
+        split = _read_json(Path(specs.get("TrainSplit", "")))
+        for dataset, classes in split.items():
+            for class_name, names in classes.items():
+                npz += [
+                    source / "SdfSamples" / dataset / class_name / f"{n}.npz"
+                    for n in names
+                ]
+
+    names = [p.stem for p in npz]
+    dataset_dir = npz[0].parent.parent if npz else None
+    manifest = _read_json(dataset_dir / "dataset.json") if dataset_dir else {}
+    params, param_names = {}, []
+    if dataset_dir is not None and (dataset_dir / "params.csv").is_file():
+        params = _read_params(dataset_dir / "params.csv", names)
+        preferred = (manifest.get("parameters") or {}).get("names") or []
+        param_names = [c for c in preferred if c in params] or list(params)
+    return {
+        "names": names,
+        "npz": npz,
+        "dataset_dir": dataset_dir,
+        "manifest": manifest,
+        "params": params,
+        "param_names": param_names,
+    }
+
+
+def _read_params(path, names) -> dict:
+    """Numeric columns of a parameter table, aligned with ``names``."""
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    by_name = {row.get("name"): row for row in rows}
+    columns = {}
+    for column in rows[0].keys() if rows else []:
+        if column == "name":
+            continue
+        values = np.full(len(names), np.nan)
+        for i, name in enumerate(names):
+            try:
+                values[i] = float(by_name[name][column])
+            except (KeyError, TypeError, ValueError):
+                pass
+        if np.isfinite(values).any():
+            columns[column] = values
+    return columns
+
+
+def _read_rows(npz_path) -> np.ndarray | None:
+    """All stored rows of one instance, ``pos`` and ``neg`` stacked."""
+    try:
+        with np.load(npz_path) as npz:
+            pos = npz["pos"] if "pos" in npz else npz["pos.npy"]
+            neg = npz["neg"] if "neg" in npz else npz["neg.npy"]
+            return np.vstack([pos, neg]).astype(np.float64)
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def reconstruction_errors(model, trained, npz_paths, n_points=2000, clamp=0.1):
+    """How well each training shape is reproduced by its own latent code.
+
+    Mean ``|clamp(f_theta(lambda_i, x)) - clamp(phi_i(x))|`` over a fixed
+    subsample of the rows stored for shape ``i``: the training loss, measured
+    per shape instead of averaged. A latent space too small for its family
+    shows up here - the shapes it had to give up on stand out.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_shapes,)
+        NaN for a shape whose ``.npz`` cannot be read.
+    """
+    trained = np.asarray(trained, dtype=np.float64)
+    errors = np.full(len(trained), np.nan)
+    for i, path in enumerate(list(npz_paths)[: len(trained)]):
+        rows = _read_rows(path)
+        if rows is None or rows.shape[1] != 3 or not len(rows):
+            continue
+        take = np.random.default_rng(i).permutation(len(rows))[:n_points]
+        rows = rows[take]
+        predicted = np.clip(decode_2d(model, trained[i], rows[:, :2]), -clamp, clamp)
+        target = np.clip(rows[:, 2], -clamp, clamp)
+        errors[i] = float(np.mean(np.abs(predicted - target)))
+    return errors
+
+
+def boundary_samples(npz_path, band=0.02, max_points=4000) -> np.ndarray:
+    """Stored samples of one shape that lie within ``band`` of its surface.
+
+    Drawn over the decoded field, they show where the true boundary of that
+    training shape is: the honest check of what the decoder made of it.
+    """
+    rows = _read_rows(npz_path)
+    if rows is None or rows.shape[1] != 3:
+        return np.zeros((0, 2))
+    near = rows[np.abs(rows[:, 2]) < band]
+    if len(near) > max_points:
+        near = near[np.random.default_rng(0).permutation(len(near))[:max_points]]
+    return near[:, :2]
+
+
+def neighbour_r2(codes, values, k=3) -> float:
+    """How well the latent codes pin down one generating parameter.
+
+    Leave-one-out k-nearest-neighbour regression: each shape's parameter is
+    predicted as the mean over its ``k`` closest *other* codes, and the score
+    is the usual ``R^2 = 1 - SSE / SST``. Near 1: codes that are close belong
+    to shapes with close values, so the parameter can be read back from the
+    latent vector. Near 0 or below: the latent space does not keep it. Unlike a
+    linear fit it does not care how the parameter is laid out in the space.
+    """
+    codes = np.asarray(codes, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    ok = np.isfinite(values)
+    codes, values = codes[ok], values[ok]
+    n = len(values)
+    k = int(k)
+    if n < k + 2 or float(np.var(values)) <= 0.0:
+        return float("nan")
+    from scipy.spatial import cKDTree
+
+    _, index = cKDTree(codes).query(codes, k=k + 1)
+    predicted = np.empty(n)
+    for i in range(n):
+        # the point itself is usually first, but not when codes coincide
+        others = [j for j in np.atleast_1d(index[i]) if j != i][:k]
+        predicted[i] = values[others].mean()
+    sse = float(np.sum((values - predicted) ** 2))
+    sst = float(np.sum((values - values.mean()) ** 2))
+    return 1.0 - sse / sst

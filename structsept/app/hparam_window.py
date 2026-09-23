@@ -103,6 +103,9 @@ class HyperparamWindow:
         ``(label, specs.json path)`` pairs offered under "Start from".
     preview_paths : (str, str), optional
         TrainSplit and DataSource written into the specs.json preview.
+    geom_dimension : int, optional
+        Coordinates per sample of that dataset, for the width checks and the
+        preview.
     """
 
     def __init__(
@@ -114,11 +117,13 @@ class HyperparamWindow:
         dataset=None,
         sources=(),
         preview_paths=("<split of the selected dataset>", "<data root>"),
+        geom_dimension=hyperparams.GEOM_DIMENSION,
     ):
         self.st = st
         self.palette = st["palette"]
         self.on_apply = on_apply
         self.n_shapes = n_shapes
+        self.geom_dimension = int(geom_dimension)
         self.sources = {label: Path(path) for label, path in sources}
         self.preview_paths = preview_paths
         self.initial = {k: _copy(v) for k, v in hp.items()}
@@ -490,7 +495,9 @@ class HyperparamWindow:
         # one only afterwards. Findings about the unparseable fields themselves
         # would describe the default, not the text, and are dropped.
         issues += [
-            i for i in hyperparams.validate(hp, self.n_shapes) if i.key not in bad
+            i
+            for i in hyperparams.validate(hp, self.n_shapes, self.geom_dimension)
+            if i.key not in bad
         ]
         order = {ERROR: 0, WARNING: 1, NOTE: 2}
         issues.sort(key=lambda i: order[i.level])
@@ -596,7 +603,9 @@ class HyperparamWindow:
                 for k, msg in bad.items()
             )
         else:
-            text = compact_json(hyperparams.to_specs(hp, *self.preview_paths))
+            text = compact_json(
+                hyperparams.to_specs(hp, *self.preview_paths, self.geom_dimension)
+            )
         self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.insert("end", text)

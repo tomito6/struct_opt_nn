@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 # Listed explicitly: auto-discovery would trip over the other top-level
 # directories (DeepSDFStruct, docs, experiments, tests) and refuse to guess.
-packages = ["structsept", "structsept.app"]
+packages = ["structsept", "structsept.app", "datagen"]
 
 [tool.uv]
 # Install this folder as an editable package, so `import structsept` works from

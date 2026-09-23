@@ -26,13 +26,13 @@ before touching anything in the optimization loop.
 
 ```
 code/                        <- VS Code workspace root (this folder)
-├── pyproject.toml           <- deps + editable install of structsept and DeepSDFStruct
+├── pyproject.toml           <- deps + editable install of structsept, datagen, DeepSDFStruct
 ├── structsept/              <- THIS PROJECT'S LIBRARY. Importable; nothing has to run it
 │   ├── plate_with_hole.py   <- the recurring test geometry (+ ScaledSpaceSDF)
-│   ├── plate_hole_params.py <- admissible (x_c, y_c, r) design space of that geometry
 │   ├── pointcloud_sdf.py    <- SDF from an unoriented point cloud (winding number)
 │   ├── fem.py               <- tetrahedral meshing + stiffness assembly (torch-fem)
 │   └── app/                 <- two Tkinter windows: explorer (main.py) + sdf_maker.py
+├── datagen/                 <- TRAINING DATA: (x_c, y_c, r) space -> exact SDF -> data/
 ├── experiments/             <- RUNNABLE ONE-OFFS. Nothing here may be imported
 │   └── IDEIAS.md            <- Portuguese notebook: queue of experiments and findings
 ├── tests/                   <- pytest; test_deepsdfstruct_env.py is the smoke test
@@ -45,6 +45,8 @@ code/                        <- VS Code workspace root (this folder)
 reverse. When a second caller needs something that lives in `experiments/`, move it
 into `structsept/` instead of importing across. Both packages are installed editable,
 so no file needs a `sys.path` hack and every script runs from any directory.
+`datagen/` is separate: it writes datasets into `data/` and shares no imports with
+`structsept/` — the file layout in `datagen/dataset.py` is the only interface.
 `docs/structure.md` is the long version of this.
 
 Editing files under `DeepSDFStruct/` edits the upstream submodule. Do that only when

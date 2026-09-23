@@ -307,6 +307,41 @@ Experimentos que isso abre (baratos, poucos minutos de CPU cada):
 - `clampedL1` com δ = 0,1 contra `L1` com δ = 0,3: o que muda na fração de
   volume e na espessura das barras quando a faixa aprendida é maior?
 
+## Placa com furo num latente 2-D (23/09)
+
+O experimento: o furo varia em três parâmetros `(x_c, y_c, r)` e a rede aprende
+um latente de dimensão 2, `(λ₁, λ₂)`. Os parâmetros só geram o SDF — a rede
+nunca os vê. Três parâmetros independentes não cabem sem perda em duas
+dimensões; a pergunta é **qual deles o latente sacrifica**.
+
+- **Dados:** `uv run python -m datagen.make_plate_hole --dim 2 --plot` escreve
+  134 placas (Sobol 128 + 6 extremos, margem 0,05) em `data/`, com SDF exato,
+  20 mil amostras por placa, em ~3 s e 32 MB. O `params.csv` ao lado guarda
+  `(x_c, y_c, r)` de cada forma; a linha `i` é o código latente `i`.
+  `datagen/` fica fora do `structsept/` de propósito: um escreve `data/`, o
+  outro lê, e nenhum importa o outro.
+- **Por que 2-D e não 3-D:** placa de espessura constante com furo passante →
+  o campo 3-D é só a extrusão do 2-D. Em 3-D com t = 0,1 o plano médio fica
+  quase constante (≈ −h) dentro do material, e a maior parte das amostras só
+  ensina as duas faces, iguais em todas as formas. O 2-D vira o 3-D exato por
+  extrusão quando precisar (`--dim 3` faz isso).
+- **A biblioteca já treinava 2-D** (`geom_dimension` nos specs); quem travava em
+  3-D era a GUI. Agora a dimensão vem do dataset (`dataset.json` ou largura das
+  linhas do `.npz`), e decoders planares abrem na aba nova **Explore 2-D**.
+- **Pegadinha:** `geom_dimension` errado nos specs derruba o treino no primeiro
+  batch com `IndexError` (o `remove_nans` lê a coluna 3). A auditoria antiga do
+  SDF maker fazia `reshape(-1, 4)` e lia arquivos 2-D como 3-D embaralhado
+  quando o número de elementos dividia por 4 — sem acusar nada.
+- **Orçamento de 30 min de CPU:** um passo custa ~35 µs por ponto de amostra
+  (medido duas vezes). 134 formas × 2000 amostras ≈ 9,5 s por época, então
+  ~150 épocas em 25 min. Sugestão: d = 2, 150 épocas, `SamplesPerScene` 2000,
+  `Step` a cada 60 épocas com fator 0,5, sem dropout; o resto no default. O
+  default (200 épocas × 8000 amostras) levaria ~2 h.
+- **Como ler o resultado:** Explore 2-D, painel "What the codes kept": um R²
+  por parâmetro (regressão pelos vizinhos mais próximos no espaço latente). Perto
+  de 1 = guardado, ≤ 0 = perdido. Controle que vale a pena: o mesmo dataset com
+  d = 3, que custa o mesmo por época.
+
 ## Perguntas em aberto
 
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram

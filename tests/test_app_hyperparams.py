@@ -598,7 +598,7 @@ def app():
         pytest.skip(f"Tk unavailable: {exc}")
     _hide(root)
     root.update()
-    root.app_state["notebook"].select(1)
+    root.app_state["notebook"].select(root.app_state["tab_frames"]["train"])
     yield root
     main._shutdown(root.app_state, root)
 

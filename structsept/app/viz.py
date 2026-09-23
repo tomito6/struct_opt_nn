@@ -380,6 +380,205 @@ def _sub(n):
 
 
 # --------------------------------------------------------------------------- #
+# planar decoders (Explore 2-D)
+# --------------------------------------------------------------------------- #
+
+_PARAM_CMAP = "viridis"
+_ERROR_CMAP = "magma_r"
+BOUNDARY_COLOR = "#F59E0B"
+
+
+def _map_xy(codes, comps, colour=None):
+    """Map coordinates of each code: two latent components, or for ``d = 1``
+    the one component against the colour column (a lone axis has no y)."""
+    codes = np.asarray(codes, dtype=float)
+    x = codes[:, comps[0]]
+    if codes.shape[1] == 1:
+        y = np.zeros_like(x) if colour is None else np.asarray(colour, dtype=float)
+    else:
+        y = codes[:, comps[1]]
+    return x, y
+
+
+def draw_latent_map(fig, codes, comps, colour=None, colour_label=None, error=False):
+    """One dot per trained code, coloured by what generated that shape.
+
+    This is the latent scatter the Explore tab dropped, back for a reason: a
+    scatter of bare codes says nothing, but coloured by the parameters that
+    made each shape it answers the question the planar experiment asks -
+    which of those parameters the latent space kept. A smooth colour gradient
+    across the cloud is a parameter the codes encode; speckle is one they lost.
+
+    Rebuilds the figure (a colorbar cannot be updated in place); the marker
+    of the current latent vector goes on top with :func:`draw_latent_marker`,
+    which is cheap enough to follow a drag.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+    codes : array_like, shape (n, d)
+    comps : (int, int)
+        Latent components on the x and y axes; the second is ignored for d = 1.
+    colour : array_like, shape (n,), optional
+        Value per code; ``None`` draws plain dots.
+    colour_label : str, optional
+    error : bool
+        Colour with the error map (bright = bad) instead of the parameter map.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+    """
+    fig.clear()
+    fig.set_layout_engine("constrained")
+    ax = fig.add_subplot(111)
+    codes = np.asarray(codes, dtype=float)
+    if codes.ndim != 2 or not len(codes):
+        ax.text(0.5, 0.5, "no trained codes", ha="center", va="center")
+        ax.set_axis_off()
+        return ax
+    x, y = _map_xy(codes, comps, colour)
+    if colour is None:
+        ax.scatter(x, y, s=16, color="#5B6B7C", alpha=0.8, linewidths=0)
+    else:
+        mapped = ax.scatter(
+            x,
+            y,
+            c=np.asarray(colour, dtype=float),
+            cmap=_ERROR_CMAP if error else _PARAM_CMAP,
+            s=20,
+            edgecolors="white",
+            linewidths=0.3,
+        )
+        bar = fig.colorbar(mapped, ax=ax, shrink=0.9, pad=0.02)
+        bar.set_label(colour_label or "", fontsize=8)
+        bar.ax.tick_params(labelsize=7)
+    ax.set_xlabel(f"λ{_sub(comps[0] + 1)}", fontsize=9)
+    if codes.shape[1] == 1:
+        ax.set_ylabel(colour_label or "", fontsize=9)
+    else:
+        ax.set_ylabel(f"λ{_sub(comps[1] + 1)}", fontsize=9)
+        # distances in the latent space are what "nearest code" means, so the
+        # two axes share a scale
+        ax.set_aspect("equal", adjustable="datalim")
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.3)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.margins(0.08)
+    return ax
+
+
+def draw_latent_marker(ax, x, y=None, nearest=None):
+    """Mark the current latent vector, and ring the trained code nearest to it.
+
+    ``y`` is ``None`` on a one-component map, where the current value is a
+    vertical line rather than a point. Earlier markers are removed first, so
+    this can run on every slider step.
+    """
+    for artist in getattr(ax, "_current_markers", []):
+        _drop(artist)
+    artists = []
+    if nearest is not None:
+        artists += ax.plot(
+            [nearest[0]],
+            [nearest[1]],
+            "o",
+            markersize=12,
+            markerfacecolor="none",
+            markeredgecolor=BOUNDARY_COLOR,
+            markeredgewidth=1.8,
+            zorder=5,
+        )
+    if y is None:
+        artists.append(ax.axvline(x, color="#C0271B", lw=1.6, zorder=6))
+    else:
+        artists += ax.plot(
+            [x], [y], "+", color="#C0271B", markersize=16, markeredgewidth=2.2, zorder=6
+        )
+    ax._current_markers = artists
+
+
+def draw_parameter_panels(fig, codes, comps, columns, scores=None):
+    """The trained codes once per generating parameter, side by side.
+
+    Small multiples of :func:`draw_latent_map`: reading which parameter the
+    codes keep should not depend on flipping a colour menu. ``scores`` puts a
+    number on each panel (``models.neighbour_r2``), so the verdict does not
+    rest on eyeballing colours alone.
+
+    Parameters
+    ----------
+    columns : list of (str, array_like)
+        ``(label, value per code)``; a label starting with "error" gets the
+        error colour map.
+    scores : list of float, optional
+    """
+    fig.clear()
+    fig.set_layout_engine("constrained")
+    codes = np.asarray(codes, dtype=float)
+    if not columns or codes.ndim != 2 or not len(codes):
+        ax = fig.add_subplot(111)
+        ax.text(
+            0.5,
+            0.5,
+            "no parameter table next to this dataset\n" "(datagen writes params.csv)",
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="#5B6B7C",
+        )
+        ax.set_axis_off()
+        return []
+    n = len(columns)
+    ncols = 1 if n == 1 else 2
+    nrows = math.ceil(n / ncols)
+    axes = []
+    for i, (label, values) in enumerate(columns):
+        ax = fig.add_subplot(nrows, ncols, i + 1)
+        x, y = _map_xy(codes, comps, values)
+        mapped = ax.scatter(
+            x,
+            y,
+            c=np.asarray(values, dtype=float),
+            cmap=_ERROR_CMAP if label.startswith("error") else _PARAM_CMAP,
+            s=9,
+            linewidths=0,
+        )
+        bar = fig.colorbar(mapped, ax=ax, shrink=0.85, pad=0.01)
+        bar.ax.tick_params(labelsize=6)
+        title = label
+        if scores is not None and i < len(scores) and np.isfinite(scores[i]):
+            title += f"   R² {scores[i]:.2f}"
+        ax.set_title(title, fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if codes.shape[1] > 1:
+            ax.set_aspect("equal", adjustable="datalim")
+        axes.append(ax)
+    return axes
+
+
+def draw_boundary_points(ax, points):
+    """Overlay stored near-surface samples of a training shape on the field.
+
+    Replaces the previous overlay; an empty array just removes it.
+    """
+    _drop(getattr(ax, "_boundary_overlay", None))
+    ax._boundary_overlay = None
+    points = np.asarray(points, dtype=float)
+    if points.size:
+        ax._boundary_overlay = ax.scatter(
+            points[:, 0],
+            points[:, 1],
+            s=1.2,
+            color=BOUNDARY_COLOR,
+            linewidths=0,
+            zorder=4,
+        )
+
+
+# --------------------------------------------------------------------------- #
 # dataset and training
 # --------------------------------------------------------------------------- #
 

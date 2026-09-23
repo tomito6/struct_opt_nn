@@ -47,7 +47,9 @@ from dataclasses import dataclass
 # their own that this form does not describe.
 ARCH = "deep_sdf_decoder"
 
-# Every dataset the SDF maker writes is 3-D: rows of (x, y, z, phi).
+# Coordinates per sample. Not a hyperparameter: the dataset decides it (3 for
+# the SDF maker's meshes, 2 for a planar datagen set), so it is passed in next
+# to the set rather than stored in it. This is the value when nobody says.
 GEOM_DIMENSION = 3
 
 LOSS_FUNCTIONS = ("clampedL1", "leakyClampedL1", "L1", "MSE", "huber")
@@ -315,7 +317,8 @@ FIELDS: tuple[Field, ...] = (
         [2],
         "Layers that receive (λ, x) again, concatenated to their input - the "
         "DeepSDF skip connection. Indices 1 to <hidden layers>; empty for "
-        "none. The layer before a skip outputs width − (d + 3) neurons.",
+        "none. The layer before a skip outputs width − (d + 3) neurons "
+        "(d + 2 on a 2-D dataset).",
         "NetworkSpecs.latent_in",
         low=0,
         high=64,
@@ -612,7 +615,11 @@ FIXED = (
         "the other DeepSDFStruct decoders need NetworkSpecs keys this form "
         "does not describe",
     ),
-    ("Geometry dimension", str(GEOM_DIMENSION), "every dataset here is (x, y, z, φ)"),
+    (
+        "Geometry dimension",
+        "from the dataset",
+        "3 for (x, y, z, φ) rows, 2 for (x, y, φ); set by the data, not here",
+    ),
     ("Optimizer", "Adam", "hardcoded in the trainer, betas at the torch defaults"),
     (
         "Gradient clipping",
@@ -839,7 +846,9 @@ def layer_list(value, n_layers: int) -> list[int]:
 # --------------------------------------------------------------------------- #
 
 
-def validate(hp: dict, n_shapes: int | None = None) -> list[Issue]:
+def validate(
+    hp: dict, n_shapes: int | None = None, geom_dimension: int = GEOM_DIMENSION
+) -> list[Issue]:
     """Everything wrong with a hyperparameter set, worst first.
 
     Errors are combinations the trainer crashes on, or that would leave a run
@@ -853,6 +862,9 @@ def validate(hp: dict, n_shapes: int | None = None) -> list[Issue]:
         A hyperparameter set, typed.
     n_shapes : int, optional
         Shapes in the selected dataset, for the batch-size check.
+    geom_dimension : int
+        Coordinates per sample of that dataset; the decoder input is
+        ``d + geom_dimension`` wide.
     """
     issues: list[Issue] = []
 
@@ -871,7 +883,7 @@ def validate(hp: dict, n_shapes: int | None = None) -> list[Issue]:
     n_layers = hp["n_layers"]
     width = hp["width"]
     epochs = hp["num_epochs"]
-    input_width = d + GEOM_DIMENSION
+    input_width = d + int(geom_dimension)
 
     # -- architecture: combinations DeepSDFDecoder cannot build or run ------ #
     skips = hp["latent_in"]
@@ -884,7 +896,7 @@ def validate(hp: dict, n_shapes: int | None = None) -> list[Issue]:
         )
     # DeepSDFDecoder shrinks the layer *before* a skip, testing "layer + 1 in
     # latent_in" for every layer up to the output one. Index n_layers + 1 is
-    # therefore not ignored: it shrinks the output layer to 1 − (d + 3)
+    # therefore not ignored: it shrinks the output layer to 1 − (d + geom)
     # neurons and the constructor fails. Only indices past that are inert.
     if n_layers + 1 in skips:
         add(
@@ -906,11 +918,16 @@ def validate(hp: dict, n_shapes: int | None = None) -> list[Issue]:
         add(
             ERROR,
             "width",
-            f"A skip connection needs width > d + 3 = {input_width}: the layer "
-            f"before it outputs width − {input_width} neurons.",
+            f"A skip connection needs width > d + {int(geom_dimension)} = "
+            f"{input_width}: the layer before it outputs width − {input_width} "
+            "neurons.",
         )
-    if hp["xyz_in_all"] and width <= GEOM_DIMENSION:
-        add(ERROR, "width", "Feeding x to every layer needs width > 3.")
+    if hp["xyz_in_all"] and width <= geom_dimension:
+        add(
+            ERROR,
+            "width",
+            f"Feeding x to every layer needs width > {int(geom_dimension)}.",
+        )
 
     for key in ("norm_layers", "dropout_layers"):
         value = hp[key]
@@ -1085,7 +1102,9 @@ def default_description(hp: dict) -> str:
     )
 
 
-def to_specs(hp: dict, split_path, data_source) -> dict:
+def to_specs(
+    hp: dict, split_path, data_source, geom_dimension: int = GEOM_DIMENSION
+) -> dict:
     """The ``specs.json`` content for a hyperparameter set.
 
     Parameters
@@ -1099,6 +1118,10 @@ def to_specs(hp: dict, split_path, data_source) -> dict:
         is the only form that survives both layouts.
     data_source : path-like
         Directory holding ``SdfSamples/<dataset>/<class>/*.npz``.
+    geom_dimension : int
+        Coordinates per sample of the dataset (2 or 3). A mismatch with the
+        stored rows is not caught by the trainer until its first batch, where
+        it dies with an IndexError - so it comes from the data, never a guess.
     """
     full = defaults()
     full.update(hp)
@@ -1121,7 +1144,7 @@ def to_specs(hp: dict, split_path, data_source) -> dict:
             "use_tanh": hp["use_tanh"],
             "latent_dropout": hp["latent_dropout"],
             "weight_norm": hp["weight_norm"],
-            "geom_dimension": GEOM_DIMENSION,
+            "geom_dimension": int(geom_dimension),
         },
         "CodeLength": hp["latent_dim"],
         "NumEpochs": hp["num_epochs"],
@@ -1223,8 +1246,9 @@ def from_specs(specs: dict) -> tuple[dict, list[str]]:
         take("dropout_prob", network["dropout_prob"], float)
     if network.get("geom_dimension", GEOM_DIMENSION) != GEOM_DIMENSION:
         notes.append(
-            f"geom_dimension {network['geom_dimension']} is not supported here; "
-            f"using {GEOM_DIMENSION}."
+            f"These specs were for {network['geom_dimension']}-D samples. The "
+            "geometry dimension is not carried over: the dataset you train on "
+            "sets it."
         )
 
     code_length = specs.get("CodeLength")

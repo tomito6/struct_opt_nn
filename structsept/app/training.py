@@ -24,7 +24,14 @@ LIBRARY_LOGGER = "DeepSDFStruct"
 ARCH = hyperparams.ARCH
 
 
-def write_specs(run_dir, split_path, data_source, hparams=None, **overrides):
+def write_specs(
+    run_dir,
+    split_path,
+    data_source,
+    hparams=None,
+    geom_dimension=hyperparams.GEOM_DIMENSION,
+    **overrides,
+):
     """Write <run_dir>/specs.json for a DeepSDF run and return its path.
 
     Parameters
@@ -39,6 +46,10 @@ def write_specs(run_dir, split_path, data_source, hparams=None, **overrides):
     hparams : dict, optional
         A hyperparameter set as described by ``structsept.app.hyperparams``.
         Missing keys take their defaults, so ``None`` writes the default run.
+    geom_dimension : int
+        Coordinates per sample of the dataset - ``datasets.geom_dimension``
+        of it. 3 builds the usual unit-cell decoder f(λ, x, y, z); 2 a planar
+        one, f(λ, x, y).
     **overrides
         Individual hyperparameters on top of ``hparams``, by their
         ``hyperparams.FIELDS`` key - ``latent_dim=2, num_epochs=30``.
@@ -56,13 +67,15 @@ def write_specs(run_dir, split_path, data_source, hparams=None, **overrides):
     if unknown:
         raise TypeError(f"unknown hyperparameter(s): {', '.join(unknown)}")
     hp.update(overrides)
-    problems = hyperparams.errors(hyperparams.validate(hp))
+    problems = hyperparams.errors(
+        hyperparams.validate(hp, geom_dimension=geom_dimension)
+    )
     if problems:
         raise ValueError(" ".join(p.message for p in problems))
 
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    specs = hyperparams.to_specs(hp, split_path, data_source)
+    specs = hyperparams.to_specs(hp, split_path, data_source, geom_dimension)
     path = run_dir / ws.specifications_filename
     path.write_text(json.dumps(specs, indent=4), encoding="utf-8")
     return path
@@ -187,6 +200,7 @@ def write_metadata(run_dir, **info):
         "split_path": specs.get("TrainSplit"),
         "data_source": specs.get("DataSource"),
         "latent_dim": specs.get("CodeLength"),
+        "geom_dimension": network_specs.get("geom_dimension", 3),
         "arch": specs.get("NetworkArch"),
         "dims": network_specs.get("dims"),
         "epochs": specs.get("NumEpochs"),
@@ -226,6 +240,9 @@ def list_runs(runs_dir):
                 "name": path.name,
                 "path": str(path),
                 "latent_dim": meta.get("latent_dim", specs.get("CodeLength")),
+                "geom_dimension": (specs.get("NetworkSpecs") or {}).get(
+                    "geom_dimension", 3
+                ),
                 "dataset": meta.get("dataset"),
                 "date": meta.get("timestamp"),
                 "epochs": meta.get("epochs", specs.get("NumEpochs")),

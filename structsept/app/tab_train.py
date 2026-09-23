@@ -1,9 +1,15 @@
 """Train tab: turn a dataset of signed-distance samples into a decoder.
 
 Step 2 of the offline pipeline. The dataset itself is produced elsewhere - see
-``structsept.app.sdf_maker`` - so this tab only picks one, states whether it is
-big enough for the requested latent dimension, runs the trainer and keeps a
-record of the runs that came out.
+``structsept.app.sdf_maker`` for meshes and the ``datagen`` package for
+parametric shapes - so this tab only picks one, states whether it is big
+enough for the requested latent dimension, runs the trainer and keeps a record
+of the runs that came out.
+
+The dataset also decides the decoder's input: 3-D samples ``(x, y, z, phi)``
+train the usual unit-cell decoder, explored on the Explore tab; 2-D samples
+``(x, y, phi)`` train a planar one, explored on Explore 2-D. That dimension is
+read from the dataset (``datasets.geom_dimension``), never chosen here.
 
 The Decoder card carries the four values changed most often (d, layers, width,
 epochs). Every other hyperparameter the trainer reads lives in the window
@@ -26,6 +32,7 @@ from structsept.app import (
     hyperparams,
     runtime,
     tab_explore,
+    tab_explore2d,
     training,
     viz,
     widgets,
@@ -235,7 +242,9 @@ def _build_runs(st, parent, palette):
 
 def refresh_datasets(st):
     rows = datasets.list_datasets(st["tr_data_root"])
-    st["tr_datasets"] = {f"{r['name']} ({r['n_instances']} shapes)": r for r in rows}
+    st["tr_datasets"] = {
+        f"{r['name']} ({r['n_instances']} shapes, {_geom(r)}-D)": r for r in rows
+    }
     values = list(st["tr_datasets"])
     combo = st["tr_combo"]
     combo.configure(values=values)
@@ -265,13 +274,17 @@ def refresh_runs(st):
 
 
 def _open_in_explore(st):
+    """Hand a run to the explorer that can show it: lattice or planar."""
     selection = st["tr_tree"].selection()
     if not selection:
         return
     name = st["tr_tree"].item(selection[0], "text")
     tab_explore.refresh_models(st)
+    tab_explore2d.refresh_models(st)
     if tab_explore.select_model(st, name):
-        st["notebook"].select(0)
+        st["notebook"].select(st["tab_frames"]["explore"])
+    elif tab_explore2d.select_model(st, name):
+        st["notebook"].select(st["tab_frames"]["explore2d"])
     else:
         messagebox.showinfo(
             "Not loadable",
@@ -293,6 +306,11 @@ def _update_readiness(st):
         d = st["tr_hparams"]["latent_dim"]
     n = row["n_instances"]
     text = f"{n} shape(s), class(es): {', '.join(row['classes']) or '-'}"
+    if _geom(row) == 2:
+        text += (
+            "\n2-D samples (x, y, φ): trains a planar decoder fθ(λ, x, y); "
+            "open the result on Explore 2-D."
+        )
     if not row["split"]:
         text += "\nNo split file - this dataset cannot be trained on."
         style = "Card.Danger.TLabel"
@@ -348,6 +366,13 @@ def _selected_dataset(st):
     return st.get("tr_datasets", {}).get(st["tr_combo"].get())
 
 
+def _geom(row):
+    """Coordinates per sample of a dataset row; 3 when no dataset is picked."""
+    if row is None:
+        return hyperparams.GEOM_DIMENSION
+    return int(row.get("geom_dimension", hyperparams.GEOM_DIMENSION))
+
+
 def open_hparams(st):
     """Open the hyperparameter window on the current set."""
     row = _selected_dataset(st)
@@ -363,6 +388,7 @@ def open_hparams(st):
             split or "<split of the selected dataset>",
             str(st["tr_data_root"]),
         ),
+        geom_dimension=_geom(row),
     )
 
 
@@ -397,7 +423,9 @@ def _update_hp_summary(st):
     hp = current_hparams(st)
     row = _selected_dataset(st)
     problems = hyperparams.errors(
-        hyperparams.validate(hp, row["n_instances"] if row is not None else None)
+        hyperparams.validate(
+            hp, row["n_instances"] if row is not None else None, _geom(row)
+        )
     )
     if problems:
         st["tr_hp_summary"].set(
@@ -432,7 +460,8 @@ def _start_training(st):
         return
 
     hp = current_hparams(st, commit=True)
-    issues = hyperparams.validate(hp, row["n_instances"])
+    geom = _geom(row)
+    issues = hyperparams.validate(hp, row["n_instances"], geom)
     problems = hyperparams.errors(issues)
     if problems:
         messagebox.showerror(
@@ -453,8 +482,15 @@ def _start_training(st):
             return
 
     def work(log):
-        specs = training.write_specs(run_dir, row["split"], st["tr_data_root"], hp)
+        specs = training.write_specs(
+            run_dir, row["split"], st["tr_data_root"], hp, geom_dimension=geom
+        )
         log(f"specs: {specs}")
+        log(
+            f"{geom}-D samples: decoder fθ(λ, "
+            + ("x, y" if geom == 2 else "x, y, z")
+            + f"), input width d + {geom} = {hp['latent_dim'] + geom}"
+        )
         changed = hyperparams.describe(hp)
         log(
             "Hyperparameters: all defaults."
@@ -533,3 +569,4 @@ def _training_done(st):
     st["tr_watch_dir"] = None
     refresh_runs(st)
     tab_explore.refresh_models(st)
+    tab_explore2d.refresh_models(st)

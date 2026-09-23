@@ -18,10 +18,23 @@ The rule has a practical consequence you can act on: the moment a second caller
 needs something that lives in `experiments/`, that something **moves into
 `structsept/`**. You never fix it by importing sideways.
 
+Training data sits outside that chain on purpose:
+
+```
+datagen/  ──writes──▶  data/  ◀──reads──  structsept.app (Train tab)
+```
+
+`datagen/` draws parametric shapes and samples their signed distance;
+`structsept/` is about the network and assumes the samples exist (its one
+sampler, the app's SDF maker, turns ready-made meshes into a dataset). Neither
+imports the other — the file layout under `data/` is the whole interface,
+documented in `datagen/dataset.py`.
+
 ## Where does my new file go?
 
 | If the thing you are writing… | …it belongs in |
 |---|---|
+| generates a parametric SDF training set or the parameters behind it | `datagen/` |
 | will be called by more than one other file | `structsept/` |
 | is a geometry, a solver, a data structure, a transform | `structsept/` |
 | produces a figure, a mesh, a number you want to look at once | `experiments/` |
@@ -40,12 +53,12 @@ code/                        <- VS Code workspace root
 ├── structsept/              LIBRARY — importable, no side effects on import
 │   ├── __init__.py
 │   ├── plate_with_hole.py       the recurring test geometry + ScaledSpaceSDF
-│   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space
 │   ├── pointcloud_sdf.py        SDF from an unoriented point cloud
 │   ├── fem.py                   tetrahedral meshing + stiffness assembly
 │   └── app/                     Tkinter applications (two windows)
-│       ├── main.py                  shell: Explore + Train tabs
+│       ├── main.py                  shell: Explore, Explore 2-D, Train tabs
 │       ├── tab_explore.py           drive f_theta by moving control points
+│       ├── tab_explore2d.py         planar decoders: latent map vs parameters
 │       ├── tab_train.py             dataset -> decoder, loss curve, run list
 │       ├── hparam_window.py         the "All hyperparameters..." window
 │       ├── hyperparams.py           every specs.json key: schema, checks, I/O
@@ -58,6 +71,12 @@ code/                        <- VS Code workspace root
 │       ├── models.py                lattice assembly + evaluation (steps 3-4)
 │       └── viz.py                   drawing only; no torch imported here
 │
+├── datagen/                TRAINING DATA — writes data/, imports no structsept
+│   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space
+│   ├── plate_hole_sdf.py        exact 2-D/3-D SDF of the plate + its samples
+│   ├── dataset.py               the on-disk contract: npz, split, params, manifest
+│   └── make_plate_hole.py       CLI: parameters -> samples -> data/
+│
 ├── experiments/            RUNNABLE ONE-OFFS — never imported by anything
 │   ├── plate_geometry.py            lattice plate, geometry only
 │   ├── plate_with_hole_network.py   the plate driven by the trained decoder
@@ -68,7 +87,9 @@ code/                        <- VS Code workspace root
 │
 ├── tests/
 │   ├── test_deepsdfstruct_env.py    offline smoke test of env + core API
+│   ├── test_datagen.py              exact field, file contract, 2-D training
 │   ├── test_app_explore.py          Explore tab regressions (off-screen Tk)
+│   ├── test_app_explore2d.py        2-D dataset -> Train tab -> Explore 2-D
 │   └── test_app_hyperparams.py      hyperparameter schema, trainer, window
 │
 ├── docs/
@@ -115,7 +136,10 @@ uv run python experiments/plate_with_hole_stiffness.py --solid --resolution 8
 
 # library modules that also carry a CLI: run them as modules
 uv run python -m structsept.plate_with_hole --hole-radius 0.3
-uv run python -m structsept.plate_hole_params --n 128 --plot
+
+# training data: design space alone, or the whole dataset into data/
+uv run python -m datagen.plate_hole_params --n 128 --margin 0.05 --plot
+uv run python -m datagen.make_plate_hole --dim 2 --plot
 
 # the GUI: explorer (Explore + Train)
 uv run python -m structsept.app.main
@@ -138,7 +162,8 @@ the reverse direction: importing a file out of `experiments/`.
 |---|---|---|
 | `experiments/outputs/` | the four experiment scripts (`--outdir` overrides) | no |
 | `outputs/` | older runs of the same scripts | no |
-| `data/`, `runs/` | the app: sampled datasets and training runs | no |
+| `data/` | `datagen` and the app's mesh sampler: training sets | no |
+| `runs/` | the app: training runs (weights, latent codes, specs) | no |
 | `docs/stiffness_theory/figures/` | `make_figures.py` | yes — they go in the PDF |
 
 Everything under the first three is regenerable. If a result matters, write it
