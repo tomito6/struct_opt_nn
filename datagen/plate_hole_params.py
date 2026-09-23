@@ -73,11 +73,23 @@ Three independent reasons, any one of which is sufficient:
   number.
 * A small hole is a high-frequency feature and the decoder blurs it.
 
+The one-parameter family
+------------------------
+:meth:`PlateHoleSpace.sample_radius` fixes the centre -- by default at the
+middle of the plate -- and varies only ``r``. It is the same admissibility
+condition with two of the three coordinates pinned, so the radius runs from
+``r_min`` to ``max_radius(centre)`` and the unit-cube description is
+``(u_x, u_y, t)`` with ``u_x`` and ``u_y`` constant. A decoder trained on it
+faces one generating parameter; the three-parameter
+:meth:`~PlateHoleSpace.sample` is the harder case the same decoder is then
+compared against.
+
 Examples
 --------
     uv run python -m datagen.plate_hole_params
     uv run python -m datagen.plate_hole_params --n 128 --margin 0.05 --plot
     uv run python -m datagen.plate_hole_params --margin 0.05 --design-margin 0.1
+    uv run python -m datagen.plate_hole_params --radius-only --n 40 --plot
 
     from datagen.plate_hole_params import PlateHoleSpace
 
@@ -85,6 +97,8 @@ Examples
     params = space.sample(64, method="sobol", seed=0)
     for name, x_c, y_c, r in params.rows():
         ...  # build one geometry per row
+
+    radii = space.sample_radius(40)  # centred hole, r only
 """
 
 from __future__ import annotations
@@ -407,6 +421,101 @@ class PlateHoleSpace:
             space=self, x_c=x_c[keep], y_c=y_c[keep], r=r[keep], unit=u[keep]
         )
 
+    def sample_radius(
+        self,
+        n=40,
+        centre=None,
+        method="grid",
+        seed=0,
+        include_extremes=True,
+        t_power=1.0,
+    ):
+        """Draw ``n`` holes at one fixed centre, varying only the radius.
+
+        The one-parameter family: ``(x_c, y_c)`` is pinned and ``r`` runs
+        from ``r_min`` to :meth:`max_radius` of that centre. The result is an
+        ordinary :class:`HoleParameters` -- same names, same ``unit``
+        description ``(u_x, u_y, t)`` with the first two columns now
+        constant, same parameter table -- so a dataset built from it differs
+        from a three-parameter one only in what its ``params.csv`` says
+        varied.
+
+        Parameters
+        ----------
+        n : int
+            Number of radii, at least 1. With ``method="grid"`` the two ends
+            are part of the ``n``.
+        centre : (float, float) or None
+            The hole centre in design units. ``None`` is the plate centre
+            (the widest radius range when the margins are symmetric).
+        method : {"grid", "sobol", "lhs", "random"}
+            ``grid`` -- the default here, unlike :meth:`sample` -- spaces the
+            radii evenly between the two ends: for one parameter a sweep is
+            more useful than a scrambled sequence, and it needs no seed. The
+            other three draw ``t`` in ``[0, 1]`` as :meth:`sample` does.
+        seed : int
+            QMC/RNG seed; ignored by ``grid``.
+        include_extremes : bool
+            Make sure ``r_min`` and the largest admissible radius are in the
+            set. A grid holds them anyway; the drawn methods get them
+            prepended, in that order, like the extremes of :meth:`sample`.
+        t_power : float
+            Radius bias ``t -> t ** (1 / t_power)`` as in :meth:`sample`,
+            applied to the drawn methods only -- a grid stays a grid.
+
+        Returns
+        -------
+        HoleParameters
+
+        Raises
+        ------
+        ValueError
+            If the centre cannot host any hole above ``r_min``: the span
+            ``max_radius(centre) - r_min`` must be positive, or the family is
+            a single shape.
+        """
+        n = int(n)
+        if n < 1:
+            raise ValueError("n must be at least 1")
+        if centre is None:
+            centre = (0.5 * self.length, 0.5 * self.width)
+        x_c, y_c = (float(v) for v in centre)
+        r_max = float(self.max_radius(x_c, y_c))
+        if r_max - self.r_min <= 0.0:
+            raise ValueError(
+                f"no radius range at centre ({x_c}, {y_c}): the largest "
+                f"admissible radius there is {r_max:.4f}, not above "
+                f"r_min={self.r_min}. Move the centre inwards."
+            )
+
+        if method == "grid":
+            t = np.linspace(0.0, 1.0, n) if n > 1 else np.array([0.0])
+        elif method == "sobol":
+            t = qmc.Sobol(d=1, scramble=True, seed=seed).random(n)[:, 0]
+        elif method == "lhs":
+            t = qmc.LatinHypercube(d=1, seed=seed).random(n)[:, 0]
+        elif method == "random":
+            t = np.random.default_rng(seed).random(n)
+        else:
+            raise ValueError(
+                f"unknown method {method!r}, expected one of "
+                "'grid', 'sobol', 'lhs', 'random'"
+            )
+        if t_power != 1.0 and method != "grid":
+            t = t ** (1.0 / t_power)
+        if include_extremes and method != "grid":
+            t = np.concatenate([[0.0, 1.0], t])
+
+        # Same de-duplication as sample(): a drawn t can land on an end, and
+        # two instances with one name would overwrite each other's .npz.
+        r = self.radius_from_t(x_c, y_c, t)
+        _, keep = np.unique(np.round(r, 9), return_index=True)
+        r = r[np.sort(keep)]
+        x_all, y_all = np.full(len(r), x_c), np.full(len(r), y_c)
+        return HoleParameters(
+            space=self, x_c=x_all, y_c=y_all, r=r, unit=self.to_unit(x_all, y_all, r)
+        )
+
     # ------------------------------------------------------------------ reports
 
     def feasible_fraction(self, n_grid=512):
@@ -538,6 +647,20 @@ class HoleParameters:
         """Iterate as ``(name, x_c, y_c, r)`` tuples, ready to drive a builder."""
         return zip(self.names, self.x_c, self.y_c, self.r)
 
+    def varied(self, tol=1e-9):
+        """Names of the parameters that actually differ across the set.
+
+        ``["x_c", "y_c", "r"]`` for a draw of :meth:`PlateHoleSpace.sample`,
+        ``["r"]`` for one of :meth:`PlateHoleSpace.sample_radius`. Read off
+        the values, not off which method produced them, so a manifest states
+        what is in the files rather than what was asked for.
+        """
+        return [
+            name
+            for name, values in (("x_c", self.x_c), ("y_c", self.y_c), ("r", self.r))
+            if len(values) > 1 and float(np.ptp(values)) > tol
+        ]
+
     def min_clearance(self):
         """Tightest ligament over the whole set -- the number to sanity-check."""
         return float(self.space.clearances(self.x_c, self.y_c, self.r).min())
@@ -578,6 +701,7 @@ class HoleParameters:
         return "\n".join(
             [
                 f"instances         {len(self)}",
+                f"varied            {', '.join(self.varied()) or 'nothing'}",
                 f"radius            [{self.r.min():.4f}, {self.r.max():.4f}]"
                 f"   mean {self.r.mean():.4f}",
                 f"centre x          [{self.x_c.min():.4f}, {self.x_c.max():.4f}]",
@@ -697,7 +821,23 @@ def main():
     parser.add_argument("--r-min", type=float, default=DEFAULT_R_MIN)
     parser.add_argument("--n", type=int, default=64, help="number of instances")
     parser.add_argument(
-        "--method", default="sobol", choices=["sobol", "lhs", "random", "grid"]
+        "--method",
+        default=None,
+        choices=["sobol", "lhs", "random", "grid"],
+        help="sobol; with --radius-only the default is grid (evenly spaced radii)",
+    )
+    parser.add_argument(
+        "--radius-only",
+        action="store_true",
+        help="fix the hole centre (at --centre) and vary only the radius",
+    )
+    parser.add_argument(
+        "--centre",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        default=None,
+        help="fixed hole centre for --radius-only; default: the plate centre",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -753,15 +893,29 @@ def main():
             f"r_max {design.r_max_global:.4f}  ->  {verdict}"
         )
 
-    params = space.sample(
-        n=args.n,
-        method=args.method,
-        seed=args.seed,
-        include_extremes=not args.no_extremes,
-        t_power=args.t_power,
-    )
+    if args.radius_only:
+        method = args.method or "grid"
+        params = space.sample_radius(
+            n=args.n,
+            centre=args.centre,
+            method=method,
+            seed=args.seed,
+            include_extremes=not args.no_extremes,
+            t_power=args.t_power,
+        )
+    else:
+        if args.centre is not None:
+            parser.error("--centre only makes sense together with --radius-only")
+        method = args.method or "sobol"
+        params = space.sample(
+            n=args.n,
+            method=method,
+            seed=args.seed,
+            include_extremes=not args.no_extremes,
+            t_power=args.t_power,
+        )
     print("\n=== sample ===")
-    print(f"method            {args.method} (seed {args.seed}, t_power {args.t_power})")
+    print(f"method            {method} (seed {args.seed}, t_power {args.t_power})")
     print(params.summary())
 
     print("\nfirst 5 instances:")

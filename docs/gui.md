@@ -11,7 +11,8 @@ The explorer assumes valid SDF datasets already exist on disk. Building them is
 a different job with a different rhythm, so it lives in its own window and kept
 its old, unstyled layout — only its text is English now. Parametric datasets
 (the plate with a hole) come from the `datagen` package instead:
-`uv run python -m datagen.make_plate_hole --dim 2`.
+`uv run python -m datagen.make_plate_hole --dim 2`, or with `--radius-only`
+for the family whose hole stays at the plate centre and only grows.
 
 ![Explore tab](figures/gui_explore.png)
 

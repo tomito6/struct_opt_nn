@@ -2,18 +2,28 @@
 
 The experiment this serves
 --------------------------
-The hole's centre ``(x_c, y_c)`` and radius ``r`` vary from shape to shape --
-three independent parameters -- and the decoder is trained with a latent code
-of whatever dimension the Train tab is set to, typically 2. The three
-parameters are used here, to draw the shapes, and then stored beside the
-samples in ``params.csv``; they are never an input of the network. Whether a
-2-D latent space can hold a 3-parameter family, and which parameter it gives up
-if it cannot, is read afterwards by comparing the learned codes with that table.
+Two families of the same plate, one generating parameter against three:
+
+* ``--radius-only`` -- the hole sits at the plate centre and only its radius
+  ``r`` changes. One parameter, so a latent code of dimension 1 should be able
+  to hold the family exactly; whether a trained code tracks ``r`` is the
+  cleanest test of the whole pipeline.
+* the default -- the centre ``(x_c, y_c)`` and the radius all vary, three
+  independent parameters. Trained with a 3-dimensional latent code the family
+  fits in principle; with 2 it cannot, and which parameter the code gives up
+  is the question of the earlier runs.
+
+Either way the parameters are used here to draw the shapes and are then stored
+beside the samples in ``params.csv``; they are never an input of the network.
+The decoder learns its own code per shape, and the answers above are read
+afterwards by comparing the learned codes with that table. The manifest says
+which parameters varied, so the two families are told apart on disk.
 
 What it does
 ------------
 1. Draw admissible ``(x_c, y_c, r)`` triples
-   (:class:`datagen.plate_hole_params.PlateHoleSpace`, Sobol by default).
+   (:class:`datagen.plate_hole_params.PlateHoleSpace`: Sobol by default, or
+   an even sweep of the radius alone with ``--radius-only``).
 2. For each triple, sample the exact signed distance of the plate in the
    normalized frame (:mod:`datagen.plate_hole_sdf`): uniform points plus a band
    around the outer edge and the hole wall.
@@ -35,6 +45,7 @@ edge of what the decoder has seen. This reproduces the 134-shape set of
 Examples
 --------
     uv run python -m datagen.make_plate_hole --dim 2
+    uv run python -m datagen.make_plate_hole --dim 2 --radius-only --n 40 --plot
     uv run python -m datagen.make_plate_hole --dim 2 --n 32 --name pilot_2d --plot
     uv run python -m datagen.make_plate_hole --dim 3 --thickness 0.1
     uv run python -m datagen.make_plate_hole --dim 2 --dry-run
@@ -86,7 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     out = parser.add_argument_group("output")
-    out.add_argument("--name", default=None, help="dataset name (plate_hole_<dim>d)")
+    out.add_argument(
+        "--name",
+        default=None,
+        help="dataset name (plate_hole_<dim>d, or plate_hole_<dim>d_r with "
+        "--radius-only)",
+    )
     out.add_argument("--data-root", default=str(dataset.DEFAULT_DATA_ROOT))
     out.add_argument("--overwrite", action="store_true", help="replace the dataset")
     out.add_argument(
@@ -107,9 +123,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="smallest ligament: one value, or four (left right bottom top)",
     )
     space.add_argument("--r-min", type=float, default=DEFAULT_R_MIN)
-    space.add_argument("--n", type=int, default=128, help="parameter draws")
     space.add_argument(
-        "--method", default="sobol", choices=["sobol", "lhs", "random", "grid"]
+        "--radius-only",
+        action="store_true",
+        help="fix the hole centre (at --centre) and vary only the radius",
+    )
+    space.add_argument(
+        "--centre",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        default=None,
+        help="fixed hole centre in design units, --radius-only only; "
+        "default: the plate centre",
+    )
+    space.add_argument(
+        "--n",
+        type=int,
+        default=None,
+        help="parameter draws (128; 40 radii with --radius-only)",
+    )
+    space.add_argument(
+        "--method",
+        default=None,
+        choices=["sobol", "lhs", "random", "grid"],
+        help="sobol; with --radius-only the default is grid (evenly spaced radii)",
     )
     space.add_argument("--seed", type=int, default=0)
     space.add_argument(
@@ -118,7 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
     space.add_argument(
         "--no-extremes",
         action="store_true",
-        help="do not prepend the corners and centre of the design box",
+        help="do not prepend the corners and centre of the design box "
+        "(with --radius-only and a drawn --method: the two end radii; a grid "
+        "always holds them)",
     )
 
     geom = parser.add_argument_group("geometry and frame")
@@ -177,6 +217,12 @@ def make_manifest(args, space, params, frame, config, argv) -> dict:
         "order": "split order = latent code index = params.csv row",
         "parameters": {
             "names": ["x_c", "y_c", "r"],
+            "varied": params.varied(),
+            "fixed_centre": (
+                [float(params.x_c[0]), float(params.y_c[0])]
+                if args.radius_only
+                else None
+            ),
             "table": dataset.PARAMS_NAME,
             "units": "design units, plate frame with origin at the lower-left corner",
             "shown_to_network": False,
@@ -188,6 +234,7 @@ def make_manifest(args, space, params, frame, config, argv) -> dict:
             "r_min": space.r_min,
         },
         "parameter_sampling": {
+            "family": "radius_only" if args.radius_only else "centre_and_radius",
             "n_requested": args.n,
             "method": args.method,
             "seed": args.seed,
@@ -275,8 +322,19 @@ def plot_preview(paths, params, frame, dim, n_show=PREVIEW_INSTANCES):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
-    args = build_parser().parse_args(argv)
-    args.name = args.name or f"plate_hole_{args.dim}d"
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.centre is not None and not args.radius_only:
+        parser.error("--centre only makes sense together with --radius-only")
+    suffix = "_r" if args.radius_only else ""
+    args.name = args.name or f"plate_hole_{args.dim}d{suffix}"
+    # The two families have different natural defaults: a low-discrepancy
+    # draw of the box against an even sweep of the one interval. Resolved
+    # here, so the manifest records the value that was actually used.
+    if args.n is None:
+        args.n = 40 if args.radius_only else 128
+    if args.method is None:
+        args.method = "grid" if args.radius_only else "sobol"
 
     space = PlateHoleSpace(
         length=args.length,
@@ -284,13 +342,23 @@ def main(argv=None):
         margin=args.margin if len(args.margin) > 1 else args.margin[0],
         r_min=args.r_min,
     )
-    params = space.sample(
-        n=args.n,
-        method=args.method,
-        seed=args.seed,
-        include_extremes=not args.no_extremes,
-        t_power=args.t_power,
-    )
+    if args.radius_only:
+        params = space.sample_radius(
+            n=args.n,
+            centre=args.centre,
+            method=args.method,
+            seed=args.seed,
+            include_extremes=not args.no_extremes,
+            t_power=args.t_power,
+        )
+    else:
+        params = space.sample(
+            n=args.n,
+            method=args.method,
+            seed=args.seed,
+            include_extremes=not args.no_extremes,
+            t_power=args.t_power,
+        )
     # Instance names carry 4 decimals; the de-duplication in sample() works at
     # 9. On a plate measured in small units two distinct holes can share a
     # name and overwrite each other's .npz, so stop before writing anything.

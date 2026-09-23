@@ -72,7 +72,7 @@ code/                        <- VS Code workspace root
 │       └── viz.py                   drawing only; no torch imported here
 │
 ├── datagen/                TRAINING DATA — writes data/, imports no structsept
-│   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space
+│   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space; r-only family
 │   ├── plate_hole_sdf.py        exact 2-D/3-D SDF of the plate + its samples
 │   ├── dataset.py               the on-disk contract: npz, split, params, manifest
 │   └── make_plate_hole.py       CLI: parameters -> samples -> data/
@@ -82,6 +82,7 @@ code/                        <- VS Code workspace root
 │   ├── plate_with_hole_network.py   the plate driven by the trained decoder
 │   ├── plate_with_hole_stiffness.py the plate taken to the stiffness matrix K
 │   ├── pointcloud_to_lattice.py     point cloud in, latent field out
+│   ├── make_plate_presets.py        writes the two plate training presets into runs/
 │   ├── IDEIAS.md                    Portuguese notebook: queue + findings
 │   └── outputs/                     what those four scripts write (gitignored)
 │
@@ -139,7 +140,8 @@ uv run python -m structsept.plate_with_hole --hole-radius 0.3
 
 # training data: design space alone, or the whole dataset into data/
 uv run python -m datagen.plate_hole_params --n 128 --margin 0.05 --plot
-uv run python -m datagen.make_plate_hole --dim 2 --plot
+uv run python -m datagen.make_plate_hole --dim 2 --plot                 # centre and radius vary
+uv run python -m datagen.make_plate_hole --dim 2 --radius-only --plot   # centred hole, radius only
 
 # the GUI: explorer (Explore + Train)
 uv run python -m structsept.app.main

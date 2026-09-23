@@ -75,6 +75,48 @@ def test_unit_cube_round_trip():
     assert np.allclose(back, u, atol=1e-12)
 
 
+def test_the_three_parameter_draw_varies_all_three():
+    params = PlateHoleSpace(margin=0.05).sample(16)
+    assert params.varied() == ["x_c", "y_c", "r"]
+
+
+def test_radius_only_family_pins_the_centre():
+    """One generating parameter: an even sweep of r at the plate centre, both
+    ends included, and a unit description whose first two columns are flat."""
+    space = PlateHoleSpace(margin=0.05)
+    params = space.sample_radius(40)
+    assert len(params) == 40
+    assert params.all_valid()
+    assert len(set(params.names)) == 40
+    assert np.all(params.x_c == 0.5) and np.all(params.y_c == 0.5)
+    assert params.r[0] == pytest.approx(space.r_min)
+    assert params.r[-1] == pytest.approx(space.r_max_global)  # 0.45
+    assert np.allclose(np.diff(params.r), params.r[1] - params.r[0])
+    assert params.varied() == ["r"]
+    assert np.allclose(params.unit[:, :2], 0.5)
+    assert np.allclose(params.unit[:, 2], np.linspace(0.0, 1.0, 40))
+    assert params.min_clearance() == pytest.approx(0.05)
+
+
+def test_radius_only_drawn_methods_keep_the_ends():
+    space = PlateHoleSpace(margin=0.05)
+    params = space.sample_radius(8, method="sobol", seed=0)
+    assert params.varied() == ["r"]
+    assert params.r.min() == pytest.approx(space.r_min)
+    assert params.r.max() == pytest.approx(space.r_max_global)
+    assert 8 <= len(params) <= 10  # the draws plus the two ends, minus collisions
+    assert len(set(params.names)) == len(params)
+
+    # Off centre the range is shorter: 0.3 from the left edge minus the margin.
+    off = space.sample_radius(5, centre=(0.3, 0.5))
+    assert np.all(off.x_c == 0.3)
+    assert off.r.max() == pytest.approx(0.25)
+    with pytest.raises(ValueError):
+        space.sample_radius(5, centre=(0.12, 0.5))  # only r_min fits there
+    with pytest.raises(ValueError):
+        space.sample_radius(5, method="halton")
+
+
 # -------------------------------------------------------------------- the field
 
 
@@ -285,6 +327,51 @@ def test_overwrite_leaves_other_classes_alone(tmp_path):
     with pytest.raises(FileExistsError):
         _make(tmp_path, 2, "--overwrite")
     assert (other / "keep.npz").is_file()
+
+
+def test_radius_only_dataset_says_so(tmp_path):
+    """The manifest states what varied, params.csv carries the fixed centre,
+    and every .npz holds the field of the hole its row describes."""
+    from datagen.plate_hole_params import PlateHoleSpace as Space
+
+    paths = _make(tmp_path, 2, "--radius-only")
+    assert paths["dataset_dir"].name == "plate_hole_2d_r"
+
+    manifest = dataset.read_manifest(paths["dataset_dir"])
+    assert manifest["parameters"]["varied"] == ["r"]
+    assert manifest["parameters"]["fixed_centre"] == [0.5, 0.5]
+    assert manifest["parameter_sampling"]["family"] == "radius_only"
+    assert manifest["parameter_sampling"]["method"] == "grid"
+    assert manifest["parameter_sampling"]["n_requested"] == 4
+
+    lines = paths["params"].read_text(encoding="utf-8").splitlines()
+    rows = [line.split(",") for line in lines[1:]]
+    names = json.loads(paths["split"].read_text(encoding="utf-8"))
+    names = names["plate_hole_2d_r"]["plate"]
+    assert [r[0] for r in rows] == names and len(names) == 4
+    assert {r[1] for r in rows} == {"0.500000"} and {r[2] for r in rows} == {"0.500000"}
+    radii = [float(r[3]) for r in rows]
+    assert radii == sorted(radii)
+    assert radii[0] == pytest.approx(0.07) and radii[-1] == pytest.approx(0.45)
+    assert Space(margin=0.05).is_valid(0.5, 0.5, radii).all()
+
+    frame = PlateFrame()
+    for name, r in zip(names, radii):
+        with np.load(paths["class_dir"] / f"{name}.npz") as npz:
+            stored = np.vstack([npz["pos"], npz["neg"]])
+        phi = plate_hole_sdf(2, frame, 0.5, 0.5, r)(stored[:, :2])
+        assert np.abs(phi - stored[:, 2]).max() < 1e-5
+
+    # The default family keeps saying so too.
+    paths = _make(tmp_path, 2)
+    manifest = dataset.read_manifest(paths["dataset_dir"])
+    assert manifest["parameters"]["varied"] == ["x_c", "y_c", "r"]
+    assert manifest["parameters"]["fixed_centre"] is None
+    assert manifest["parameter_sampling"]["family"] == "centre_and_radius"
+    assert manifest["parameter_sampling"]["method"] == "sobol"
+
+    with pytest.raises(SystemExit):
+        _make(tmp_path, 2, "--centre", "0.3", "0.3", "--name", "misuse")
 
 
 def test_3d_dataset_passes_the_gui_audit(tmp_path):

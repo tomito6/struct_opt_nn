@@ -384,6 +384,66 @@ ReLU sem dropout, 250 épocas, Adam 5e-4 / 1e-3, clamped L1 com δ = 0,1.
   ajuste mediano 0,016, R² x_c −0,26 · y_c 0,90 · r 0,32. O latente de 250
   épocas guardou o y_c e largou o x_c — ver se isso muda com 134 formas.
 
+## Dois datasets: furo centrado (só r) e furo livre com d = 3 (23/09)
+
+Pedido do supervisor, mesmo dia: separar o experimento em duas famílias da
+mesma placa, uma com um parâmetro e outra com três, e treinar a segunda com
+latente de dimensão 3 em vez de 2.
+
+| dataset | o que varia | formas | como foi tirado | tamanho |
+|---|---|---|---|---|
+| `plate_hole_2d_r_only` | só `r`, furo em (0,5, 0,5) | 40 | grade uniforme, r de 0,07 a 0,45 | 24 MB |
+| `plate_hole_2d_xyr` | `x_c`, `y_c`, `r` | 134 | Sobol 128 + 6 extremos, seed 0 | 80 MB |
+
+Os dois com margem 0,05, 25 mil uniformes + 25 mil na faixa por placa (a
+convenção da planilha), 2-D. Comandos:
+
+```
+uv run python -m datagen.make_plate_hole --dim 2 --radius-only --n-uniform 25000 --n-band 25000 --name plate_hole_2d_r_only --plot
+uv run python -m datagen.make_plate_hole --dim 2 --n-uniform 25000 --n-band 25000 --name plate_hole_2d_xyr --plot
+```
+
+- **`--radius-only` é novo** (`PlateHoleSpace.sample_radius`): fixa o centro
+  (default: o meio da placa, `--centre X Y` pra outro ponto) e varre só o
+  raio, de `r_min` até o maior furo que cabe ali. Pra um parâmetro só, grade
+  uniforme é mais útil que Sobol, então o `--method` default vira `grid`
+  nesse modo. Os nomes das instâncias, o `params.csv` e o `unit` são os
+  mesmos da família de três parâmetros — só `u_x` e `u_y` ficam constantes.
+- **O manifesto agora diz o que variou:** `parameters.varied` (`["r"]` ou
+  `["x_c", "y_c", "r"]`, lido dos valores gravados, não da flag), mais
+  `parameters.fixed_centre` e `parameter_sampling.family` (esses dois vêm da
+  flag `--radius-only`).
+- `plate_hole_2d_xyr` é **byte a byte igual** ao `plate_hole_2d_n134` (mesma
+  seed, mesmos parâmetros); só o nome mudou pra dizer o que varia. O `n134`
+  pode ser apagado quando os presets antigos que apontam pra ele não
+  interessarem mais.
+- **Presets** (só `specs.json`, não treinados), com os mesmos hiperparâmetros
+  do `preset_plate2d_30min` — 4 × 64 ReLU sem dropout, 4096 amostras por
+  forma, 5 formas por batch, 1500 épocas, lr caindo pela metade em 500 e
+  1000, clamped L1 com δ = 0,1 — mudando só o dataset, o `d` e o σ inicial
+  do latente (√(0,01·d), como antes):
+
+  | preset | dataset | d | σ | tempo estimado |
+  |---|---|---|---|---|
+  | `runs/preset_plate2d_r_only_d1` | `plate_hole_2d_r_only` | 1 | 0,100 | ~8 min (40 formas → 8 batches/época) |
+  | `runs/preset_plate2d_xyr_d3` | `plate_hole_2d_xyr` | 3 | 0,173 | ~28 min sem GUI, ~33 na GUI |
+
+  Os dois saem de `uv run python experiments/make_plate_presets.py`
+  (`runs/` é gitignored e o `specs.json` guarda caminhos absolutos, então em
+  outra máquina é gerar os datasets e rodar esse script).
+  Na GUI: escolher o dataset → "All hyperparameters…" → Start from
+  `run: preset_…` → Load → Apply → Train (mesma receita do item anterior).
+  No `xyr` continuam sobrando 4 formas por época (134 não divide por 5);
+  no `r_only` 40/5 fecha certinho.
+- **O que olhar depois do treino:** no `r_only` o código é um número por
+  placa; contra a coluna `r` do `params.csv` ele deve sair monotônico, e a
+  aba Explore 2-D com um slider só deve varrer o furo de 0,07 a 0,45 sem
+  passar por nada estranho. No `xyr` com d = 3 a pergunta é se os três
+  parâmetros cabem agora: como o latente aprendido é uma base arbitrária,
+  comparar por regressão linear de `(x_c, y_c, r)` sobre `(λ₁, λ₂, λ₃)`
+  (R² de cada parâmetro), não componente a componente. Ainda não há script
+  pra essa comparação — é o próximo passo natural.
+
 ## Perguntas em aberto
 
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram
