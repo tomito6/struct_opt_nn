@@ -254,11 +254,16 @@ def _show_report(st, report):
 # --------------------------------------------------------------------------- #
 
 
-def build_app():
-    """Build the Tk root without starting the loop."""
+def build_app(root=None):
+    """Build the Tk root without starting the loop.
+
+    ``root`` is the launcher's already-created (withdrawn, empty) interpreter;
+    left out, a fresh ``tk.Tk()`` is made.
+    """
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
-    root = tk.Tk()
+    if root is None:
+        root = tk.Tk()
     root.title("SDF maker - meshes to an SdfSamples dataset")
     root.geometry("1100x720")
 

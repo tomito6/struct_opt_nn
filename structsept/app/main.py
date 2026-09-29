@@ -50,13 +50,19 @@ DATA_ROOT = REPO_ROOT / "data"
 RUNS_DIR = REPO_ROOT / "runs"
 
 
-def build_app():
-    """Build the Tk root with every tab wired up, without starting the loop."""
+def build_app(root=None):
+    """Build the Tk root with every tab wired up, without starting the loop.
+
+    ``root`` lets the desktop launcher hand over the (withdrawn, still empty)
+    interpreter its splash screen lives in; without it a fresh ``tk.Tk()`` is
+    created. Either way the widgets end up in the returned root.
+    """
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    theme.enable_dpi_awareness()
-    root = tk.Tk()
+    if root is None:
+        theme.enable_dpi_awareness()
+        root = tk.Tk()
     # the theme has to be applied before any widget exists: option_add only
     # reaches widgets created afterwards
     palette = theme.apply_theme(root)

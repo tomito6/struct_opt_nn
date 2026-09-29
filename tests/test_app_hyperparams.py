@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -339,6 +340,310 @@ def test_preview_json_is_the_same_content():
 
     specs = hyperparams.to_specs(_hp(**MODIFIED), "S", "D")
     assert json.loads(compact_json(specs)) == specs
+
+
+# --------------------------------------------------------------------------- #
+# the supervisor's sheet
+# --------------------------------------------------------------------------- #
+
+SHEET_DIR = Path(__file__).resolve().parents[1] / "docs" / "hyperparameters"
+FILLED_SHEET = SHEET_DIR / "NN_Training_Hyperparameters_plate2d_r_only_d1_8x256_4h.xlsx"
+
+# The template's rows, in its order, with the values of the 8x256 run.
+SHEET_ROWS = [
+    ("Initial NN Training — Hyperparameter Template", None),
+    (None, None),
+    ("Hyperparameter", "Value"),
+    ("Training data", None),
+    ("Number of training geometries", 40),
+    ("Samples per geometry", 50000),
+    ("Points per training step", 16384),
+    ("Geometries per batch", 4),
+    ("Sampling strategy", "Random window per step"),
+    ("Latent space", None),
+    ("Latent dimension", 1),
+    ("Latent initialization mean", 0),
+    ("Latent initialization variance", 0.01),
+    ("Initial latent regularization", 0.0001),
+    ("Network architecture", None),
+    ("Hidden layers", 8),
+    ("Neurons per hidden layer", 256),
+    ("Activation function", "ReLU"),
+    ("Dropout", 0.2),
+    ("Training", None),
+    ("Epochs", 600),
+    ("Optimizer", "Adam"),
+    ("Learning rate — network weights", 0.0005),
+    ("Learning rate — latent vectors", 0.001),
+    ("Learning-rate decay factor", 0.5),
+    ("Learning-rate decay interval", 150),
+    ("Loss", None),
+    ("Loss function", "Clamped L1"),
+    ("Clamp value", 0.1),
+]
+# what those rows mean in hyperparams keys (experiments/train_plate_r_only_4h.py)
+SHEET_EXPECTED = dict(
+    n_layers=8,
+    width=256,
+    dropout_prob=0.2,
+    latent_dim=1,
+    code_init_std=0.1,
+    code_reg_lambda=1e-4,
+    loss_function="clampedL1",
+    clamping_distance=0.1,
+    samples_per_scene=4096,
+    scenes_per_batch=4,
+    num_epochs=600,
+    lr_dec_type="Step",
+    lr_dec_initial=5e-4,
+    lr_dec_interval=150,
+    lr_dec_factor=0.5,
+    lr_code_type="Step",
+    lr_code_initial=1e-3,
+    lr_code_interval=150,
+    lr_code_factor=0.5,
+)
+
+
+def _write_xlsx(path, rows, shared=False):
+    """A minimal workbook: one sheet, inline or shared strings, numbers,
+    booleans - written by hand so the reader is tested against the file
+    format, not against a library that reads what it wrote."""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    strings = []
+
+    def cell(ref, value):
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return f'<c r="{ref}" t="b"><v>{int(value)}</v></c>'
+        if isinstance(value, (int, float)):
+            return f'<c r="{ref}"><v>{value!r}</v></c>'
+        if shared:
+            strings.append(value)
+            return f'<c r="{ref}" t="s"><v>{len(strings) - 1}</v></c>'
+        return f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+
+    body = []
+    for r, row in enumerate(rows, start=1):
+        cells = "".join(cell(f"{chr(65 + c)}{r}", v) for c, v in enumerate(row))
+        body.append(f'<row r="{r}">{cells}</row>')
+    main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    sheet = (
+        f'<worksheet xmlns="{main}"><sheetData>{"".join(body)}</sheetData></worksheet>'
+    )
+    workbook = (
+        f'<workbook xmlns="{main}" xmlns:r="{rel}"><sheets>'
+        '<sheet name="Hyperparameters" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'relationships"><Relationship Id="rId1" Type="x" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", rels)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+        if shared:
+            items = "".join(
+                f"<si><r><t>{escape(s[:1])}</t></r><r><t>{escape(s[1:])}</t></r></si>"
+                for s in strings
+            )
+            z.writestr("xl/sharedStrings.xml", f'<sst xmlns="{main}">{items}</sst>')
+    return path
+
+
+@pytest.mark.parametrize("shared", [False, True], ids=["inline", "shared"])
+def test_xlsx_reader(tmp_path, shared):
+    from structsept.app import xlsx
+
+    rows = [("Hyperparameter", "Value", "Notes"), ("Epochs", 600, None)]
+    rows += [("Dropout", 0.2, True), ("Loss function", "Clamped L1", None)]
+    path = _write_xlsx(tmp_path / "t.xlsx", rows, shared=shared)
+    got = xlsx.read_rows(path)
+    assert got[0] == ["Hyperparameter", "Value", "Notes"]
+    assert got[1] == ["Epochs", 600, None] and isinstance(got[1][1], int)
+    assert got[2] == ["Dropout", 0.2, True]
+    assert got[3][1] == "Clamped L1"  # rich-text runs joined
+    with pytest.raises(ValueError, match="worksheet named"):
+        xlsx.read_rows(path, sheet="Other")
+    (tmp_path / "not.xlsx").write_text("hello")
+    with pytest.raises(ValueError, match="not an Excel workbook"):
+        xlsx.read_rows(tmp_path / "not.xlsx")
+
+
+def _assert_sheet_values(hp):
+    for key, want in SHEET_EXPECTED.items():
+        got = hp[key]
+        assert got == (pytest.approx(want) if isinstance(want, float) else want), key
+
+
+def test_from_sheet_reproduces_the_4h_run(tmp_path):
+    hp, notes = hyperparams.from_sheet(SHEET_ROWS, n_shapes=40)
+    _assert_sheet_values(hp)
+    assert hyperparams.errors(hyperparams.validate(hp, 40, 2)) == []
+    # every key the sheet does not have keeps its default
+    for field in hyperparams.FIELDS:
+        if field.key not in SHEET_EXPECTED:
+            assert hp[field.key] == field.default, field.key
+    text = " ".join(notes)
+    assert "4096 = 16384 points per step / 4" in text
+    assert "sqrt(0.01 · d=1) = 0.1" in text
+    assert "not a row" not in text.lower()
+    # the same rows through a real file
+    path = _write_xlsx(tmp_path / "run.xlsx", SHEET_ROWS)
+    from structsept.app import xlsx
+
+    again, _ = hyperparams.from_sheet(xlsx.read_rows(path), n_shapes=40)
+    assert again == hp
+
+
+@pytest.mark.skipif(not FILLED_SHEET.is_file(), reason="sheet not in docs/")
+def test_the_shipped_sheet_matches_the_experiment():
+    """The sheet filled in for runs/plate2d_r_only_d1_8x256_4h says what the
+    script that trained it says."""
+    from structsept.app import xlsx
+
+    hp, _ = hyperparams.from_sheet(xlsx.read_rows(FILLED_SHEET), n_shapes=40)
+    _assert_sheet_values(hp)
+
+
+FILLED_SHEET_D2 = FILLED_SHEET.with_name(
+    "NN_Training_Hyperparameters_plate2d_r_only_d2_8x256_4h.xlsx"
+)
+
+
+@pytest.mark.skipif(not FILLED_SHEET_D2.is_file(), reason="sheet not in docs/")
+def test_the_d2_sheet_is_the_same_recipe_with_a_two_component_code():
+    """The d=2 copy of the sheet (runs/plate2d_r_only_d2_8x256_4h) changes
+    only 'Latent dimension'; the variance stays per component, so the
+    trainer's sigma becomes sqrt(0.01 * 2)."""
+    from structsept.app import xlsx
+
+    hp, notes = hyperparams.from_sheet(xlsx.read_rows(FILLED_SHEET_D2), n_shapes=40)
+    expected = dict(SHEET_EXPECTED, latent_dim=2, code_init_std=0.02**0.5)
+    for key, want in expected.items():
+        got = hp[key]
+        assert got == (pytest.approx(want) if isinstance(want, float) else want), key
+    assert "sqrt(0.01 · d=2)" in " ".join(notes)
+    assert hyperparams.errors(hyperparams.validate(hp, 40, 2)) == []
+
+
+FILLED_SHEET_XYR_D3 = FILLED_SHEET.with_name(
+    "NN_Training_Hyperparameters_plate2d_xyr_d3_8x256_4h.xlsx"
+)
+
+
+@pytest.mark.skipif(not FILLED_SHEET_XYR_D3.is_file(), reason="sheet not in docs/")
+def test_the_xyr_d3_sheet_is_the_same_recipe_sized_for_134_shapes():
+    """The sheet for runs/plate2d_xyr_d3_8x256_4h (experiments/
+    train_plate_xyr_4h.py) changes four cells of the d=2 one: 134 geometries,
+    a three-component code, and 300 epochs with the decay every 75 - the
+    same recipe, sized for 3.35 x the shapes in the same 4 hours."""
+    from structsept.app import xlsx
+
+    hp, notes = hyperparams.from_sheet(
+        xlsx.read_rows(FILLED_SHEET_XYR_D3), n_shapes=134
+    )
+    expected = dict(
+        SHEET_EXPECTED,
+        latent_dim=3,
+        code_init_std=0.03**0.5,
+        num_epochs=300,
+        lr_dec_interval=75,
+        lr_code_interval=75,
+    )
+    for key, want in expected.items():
+        got = hp[key]
+        assert got == (pytest.approx(want) if isinstance(want, float) else want), key
+    assert "sqrt(0.01 · d=3)" in " ".join(notes)
+    issues = hyperparams.validate(hp, 134, 2)
+    assert hyperparams.errors(issues) == []
+    # 134 is not a multiple of 4: the trainer drops two shapes per epoch, and
+    # the set says so without refusing.
+    assert any(
+        i.key == "scenes_per_batch" and "2 of the 134" in i.message for i in issues
+    )
+
+
+def test_from_sheet_reports_what_it_cannot_take():
+    rows = [
+        ("Hyperparameter", "Value"),
+        ("Number of training geometries", 40),
+        ("Points per training step", 1000),
+        ("Geometries per batch", 3),
+        ("Latent dimension", 2),
+        ("Latent initialization variance", 0.02),
+        ("Latent initialization mean", 0.5),
+        ("Activation function", "GELU"),
+        ("Optimizer", "SGD"),
+        ("Epochs", "many"),
+        ("Hidden layers", 40),
+        ("Loss function", "hinge"),
+        ("Learning-rate decay factor", 0.25),
+        ("Weight decay", 1e-5),
+        ("Dropout", None),
+    ]
+    hp, notes = hyperparams.from_sheet(rows, n_shapes=25)
+    text = "\n".join(notes)
+    assert hp["samples_per_scene"] == 332 and "4 points dropped" in text
+    assert hp["code_init_std"] == pytest.approx((0.02 * 2) ** 0.5)
+    assert hp["num_epochs"] == 200 and "'many'" in text
+    assert hp["n_layers"] == 6 and "at most 12" in text
+    assert hp["loss_function"] == "clampedL1" and "'hinge'" in text
+    assert hp["lr_dec_factor"] == hp["lr_code_factor"] == 0.25
+    assert "for 40 training geometries; the selected dataset has 25" in text
+    for bad in ("0.5 cannot be set", "'GELU'", "'SGD'", "'Weight decay' (row 14)"):
+        assert bad in text, bad
+    assert "Blank in the sheet, kept the defaults: 'Dropout'" in text
+    # no header row, blank template: every value stays at its default
+    blank = [(name, None) for name, _ in SHEET_ROWS[3:]]
+    hp, notes = hyperparams.from_sheet(blank)
+    assert hp == hyperparams.defaults()
+    assert notes == [
+        "21 of the sheet's rows are blank; those values keep the defaults."
+    ]
+
+
+def test_origin_summary_says_what_was_edited():
+    loaded = _hp(num_epochs=600, width=256)
+    origin = {"label": "run: big", "hp": loaded, "when": "14:02"}
+    assert hyperparams.origin_summary(None, loaded) == ""
+    assert hyperparams.origin_summary(origin, dict(loaded)) == (
+        "From run: big (loaded 14:02)."
+    )
+    edited = dict(loaded, num_epochs=50, lr_dec_interval=7, lr_dec_type="Warmup")
+    text = hyperparams.origin_summary(origin, edited)
+    assert text.startswith("From run: big (loaded 14:02); edited since: ")
+    assert "epochs" in text and "decoder schedule" in text
+    assert "lr step" not in text  # a hidden Step row is not an edit
+
+
+def test_runs_are_listed_newest_first(tmp_path):
+    from structsept.app import training
+
+    for name, stamp in (("b", "2026-09-23T09:00:00"), ("a", "2026-09-28T02:46:04")):
+        run = tmp_path / name
+        run.mkdir()
+        (run / "specs.json").write_text(json.dumps({"CodeLength": 1}))
+        (run / "metadata.json").write_text(json.dumps({"timestamp": stamp}))
+    fresh = tmp_path / "c"  # started by hand, no metadata yet
+    fresh.mkdir()
+    (fresh / "specs.json").write_text(json.dumps({"CodeLength": 2}))
+    (tmp_path / "not_a_run").mkdir()
+
+    rows = training.list_runs(tmp_path)
+    assert [r["name"] for r in rows] == ["c", "a", "b"]
+    assert rows[0]["date_is_estimate"] and rows[0]["date"] > rows[1]["date"]
+    assert not rows[1]["date_is_estimate"]
+    labels = [label for label, _ in training.spec_sources(tmp_path)]
+    assert labels[:3] == ["run: c", "run: a", "run: b"]
+    assert labels[3].startswith("shipped: ")
 
 
 # --------------------------------------------------------------------------- #
@@ -777,6 +1082,137 @@ def test_a_malformed_specs_file_is_reported(app, window, tmp_path):
     _pump(app, 0.2)
     assert "Could not use" in window.status.get()
     assert app.app_state.get("callback_errors") is None
+
+
+def test_import_sheet_into_the_window(app, window, tmp_path, monkeypatch):
+    from structsept.app import hparam_window
+
+    st = app.app_state
+    path = _write_xlsx(tmp_path / "sheet.xlsx", SHEET_ROWS)
+    monkeypatch.setattr(
+        hparam_window.filedialog, "askopenfilename", lambda **kw: str(path)
+    )
+    window.import_sheet()
+    _pump(app, 0.4)
+    assert window.vars["width"].get() == "256"
+    assert window.vars["samples_per_scene"].get() == "4096"
+    assert window.vars["code_init_std"].get() == "0.1"
+    assert window.status.get().startswith("Imported sheet.xlsx")
+    assert window.origin["label"] == "sheet: sheet.xlsx"
+    assert window.apply() is True
+    _pump(app, 0.3)
+    try:
+        assert st["tr_hparams"]["num_epochs"] == 600 and st["tr_epochs"].get() == 600
+        assert st["tr_hp_summary"].get().startswith("From sheet: sheet.xlsx")
+        assert "loaded from sheet: sheet.xlsx" in st["tr_log"].get("1.0", "end")
+        assert st["tr_sheet_dir"] == tmp_path  # the next dialog opens here
+        # a file that is not a workbook is reported, not raised
+        bad = tmp_path / "bad.xlsx"
+        bad.write_text("nope")
+        monkeypatch.setattr(
+            hparam_window.filedialog, "askopenfilename", lambda **kw: str(bad)
+        )
+        again = tab_train_open(st)
+        try:
+            again.import_sheet()
+            assert "Could not read bad.xlsx" in again.status.get()
+        finally:
+            again.close()
+    finally:
+        st["tr_hp_origin"] = None
+    _pump(app, 0.2)
+
+
+def tab_train_open(st):
+    from structsept.app import tab_train
+
+    win = tab_train.open_hparams(st)
+    _hide(win.top)
+    return win
+
+
+def test_the_window_remembers_where_its_values_came_from(app, window):
+    """Load, apply, close, open again: the source is still named, and so is
+    whatever was edited by hand in between."""
+    st = app.app_state
+    label = next(s for s in window.sources if s.endswith("ChiAndCross"))
+    window.source_combo.set(label)
+    window.load_selected()
+    assert window.apply() is True
+    _pump(app, 0.3)
+    try:
+        assert st["tr_hp_origin"]["label"] == label
+        assert st["tr_hp_summary"].get().startswith(f"From {label} (loaded ")
+        assert "edited since" not in st["tr_hp_summary"].get()
+
+        again = tab_train_open(st)
+        try:
+            assert again.source_combo.get() == label
+            assert again.status.get().startswith(f"From {label}")
+            assert "edited since" not in again.status.get()
+            again.vars["num_epochs"].set("30")  # one edit by hand, applied
+            assert again.apply() is True
+        finally:
+            again.close()
+        _pump(app, 0.3)
+        assert st["tr_hp_origin"]["label"] == label  # still that source
+        assert "edited since: epochs" in st["tr_hp_summary"].get()
+        st["tr_width"].set(64)  # a card edit counts too
+        _pump(app, 0.2)
+        assert "edited since: width, epochs" in st["tr_hp_summary"].get()
+
+        third = tab_train_open(st)
+        try:
+            assert "edited since: width, epochs" in third.status.get()
+            third.reset()
+            assert third.source_combo.get() == "" and third.origin is None
+            assert third.apply() is True
+        finally:
+            third.close()
+        _pump(app, 0.3)
+        assert st["tr_hp_origin"] is None
+        assert not st["tr_hp_summary"].get().startswith("From ")
+    finally:
+        st["tr_hp_origin"] = None
+        st["tr_width"].set(128)
+    _pump(app, 0.2)
+
+
+def test_runs_table_sorts_by_column(app, tmp_path):
+    from structsept.app import tab_train
+
+    st = app.app_state
+    for name, stamp, d in (
+        ("old", "2026-09-01T10:00:00", 3),
+        ("new", "2026-09-28T10:00:00", 1),
+    ):
+        run = tmp_path / name
+        run.mkdir()
+        (run / "specs.json").write_text(json.dumps({"CodeLength": d}))
+        (run / "metadata.json").write_text(json.dumps({"timestamp": stamp}))
+    old_dir = st["tr_runs_dir"]
+    st["tr_runs_dir"] = tmp_path
+    try:
+
+        def shown():
+            tree = st["tr_tree"]
+            return [tree.item(i, "text") for i in tree.get_children()]
+
+        tab_train.refresh_runs(st)
+        assert shown() == ["new", "old"]
+        assert "▾" in str(st["tr_tree"].heading("date", "text"))
+        tab_train.sort_runs(st, "latent_dim")
+        assert shown() == ["new", "old"]  # d = 1 before d = 3
+        tab_train.sort_runs(st, "latent_dim")
+        assert shown() == ["old", "new"]
+        assert "▾" in str(st["tr_tree"].heading("d", "text"))
+        assert "▾" not in str(st["tr_tree"].heading("date", "text"))
+        tab_train.sort_runs(st, "name")
+        assert shown() == ["new", "old"]
+    finally:
+        st["tr_runs_dir"] = old_dir
+        st["tr_runs_sort"] = ("date", True)
+        tab_train.refresh_runs(st)
 
 
 def test_train_refuses_an_invalid_set(app, tiny_data, monkeypatch):

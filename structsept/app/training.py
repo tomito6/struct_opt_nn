@@ -10,6 +10,7 @@ What goes into specs.json is described field by field in
 
 import json
 import logging
+import shutil
 import time
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -84,7 +85,7 @@ def write_specs(
 def spec_sources(runs_dir):
     """Every ``specs.json`` a hyperparameter set can be loaded from.
 
-    Local runs first, sorted by name like ``list_runs``, then the decoders
+    Local runs first, newest first like ``list_runs``, then the decoders
     shipped with DeepSDFStruct - their specs are the reference settings of the
     paper's test cases.
 
@@ -95,13 +96,10 @@ def spec_sources(runs_dir):
     """
     from DeepSDFStruct.pretrained_models import PRETRAINED_MODELS_DIR, PretrainedModels
 
-    sources = []
-    runs_dir = Path(runs_dir)
-    if runs_dir.is_dir():
-        for path in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
-            specs = path / ws.specifications_filename
-            if specs.is_file():
-                sources.append((f"run: {path.name}", specs))
+    sources = [
+        (f"run: {row['name']}", Path(row["path"]) / ws.specifications_filename)
+        for row in list_runs(runs_dir)
+    ]
     for member in PretrainedModels:
         specs = Path(PRETRAINED_MODELS_DIR) / member.value / ws.specifications_filename
         if specs.is_file():
@@ -220,10 +218,16 @@ def read_metadata(run_dir):
 
 
 def list_runs(runs_dir):
-    """List every run directory under runs_dir as a row for the GUI.
+    """List every run directory under runs_dir as a row for the GUI, newest
+    first.
 
     A directory counts as a run once it holds a specs.json; metadata.json and a
     saved checkpoint only enrich the row.
+
+    ``date`` is the metadata timestamp - written when the run finished, or
+    when a preset was generated. A run without metadata (started by hand, or
+    still training) is dated by its specs.json instead, and
+    ``date_is_estimate`` says so. Both are ISO strings, so they sort as text.
     """
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
@@ -231,10 +235,15 @@ def list_runs(runs_dir):
 
     rows = []
     for path in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
-        specs = _read_json(path / ws.specifications_filename)
+        specs_path = path / ws.specifications_filename
+        specs = _read_json(specs_path)
         if not specs:
             continue
         meta = _read_json(path / "metadata.json")
+        date = meta.get("timestamp")
+        estimated = not isinstance(date, str) or not date
+        if estimated:
+            date = _file_date(specs_path)
         rows.append(
             {
                 "name": path.name,
@@ -244,13 +253,117 @@ def list_runs(runs_dir):
                     "geom_dimension", 3
                 ),
                 "dataset": meta.get("dataset"),
-                "date": meta.get("timestamp"),
+                "date": date,
+                "date_is_estimate": estimated,
                 "epochs": meta.get("epochs", specs.get("NumEpochs")),
                 "final_loss": meta.get("final_loss", _final_loss(path)),
+                "description": specs.get("Description") or "",
                 "trained": (path / ws.model_params_subdir / "latest.pth").is_file(),
             }
         )
+    rows.sort(key=lambda row: row["date"], reverse=True)
     return rows
+
+
+def _file_date(path) -> str:
+    """Modification time of a file as an ISO string; empty when unreadable."""
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime).isoformat()
+    except OSError:
+        return ""
+
+
+# --------------------------------------------------------------------------- #
+# run housekeeping: rename, annotate, delete
+# --------------------------------------------------------------------------- #
+
+# What Windows refuses in a file name, plus the separators; the same set is
+# refused everywhere so a run made on one machine opens on another.
+RUN_NAME_FORBIDDEN = frozenset('<>:"/\\|?*')
+
+
+def check_run_name(runs_dir, name, current=None):
+    """Why ``name`` cannot be a run directory under ``runs_dir``, or ``None``.
+
+    ``current`` is the run being renamed: keeping its own name is allowed
+    (nothing to do), any other existing directory is a clash. Leading and
+    trailing blanks are not part of a name; the caller strips them the same
+    way before using it.
+    """
+    name = str(name).strip()
+    if not name:
+        return "The run needs a name."
+    if name in (".", "..") or name.endswith(".") or name.endswith(" "):
+        return f"'{name}' is not a usable directory name."
+    if any(c in RUN_NAME_FORBIDDEN or ord(c) < 32 for c in name):
+        return 'A run name cannot contain / \\ : * ? " < > |.'
+    if name != current and (Path(runs_dir) / name).exists():
+        return f"A run called '{name}' already exists."
+    return None
+
+
+def rename_run(runs_dir, old, new):
+    """Rename the run directory ``old`` to ``new`` and return the new path.
+
+    Only the directory moves: ``specs.json`` names the dataset by its split
+    file, not the run, so nothing inside has to change. Raises ``ValueError``
+    for a name :func:`check_run_name` refuses and ``OSError`` when the file
+    system does - on Windows that includes a run another process is writing
+    to, or a file of it open in a viewer.
+    """
+    new = str(new).strip()
+    problem = check_run_name(runs_dir, new, current=old)
+    if problem:
+        raise ValueError(problem)
+    src = Path(runs_dir) / old
+    if not (src / ws.specifications_filename).is_file():
+        raise FileNotFoundError(f"'{old}' is not a run directory.")
+    if new == old:
+        return src
+    dst = src.with_name(new)
+    src.rename(dst)
+    return dst
+
+
+def delete_run(runs_dir, name):
+    """Remove the run directory ``name`` with everything in it.
+
+    Refuses anything that is not a run - no ``specs.json`` - and anything
+    outside ``runs_dir``, so a bad name can never take another folder with
+    it. Raises ``FileNotFoundError`` / ``ValueError`` before touching
+    anything, ``OSError`` when a file cannot be removed.
+    """
+    runs_dir = Path(runs_dir).resolve()
+    path = (runs_dir / str(name)).resolve()
+    if path.parent != runs_dir or path == runs_dir:
+        raise ValueError(f"'{name}' is not a run under {runs_dir}.")
+    if not path.is_dir():
+        raise FileNotFoundError(f"'{name}' does not exist.")
+    if not (path / ws.specifications_filename).is_file():
+        raise ValueError(f"'{name}' has no specs.json, so it is not a run.")
+    shutil.rmtree(path)
+
+
+def read_description(run_dir) -> str:
+    """The free-text ``Description`` of a run's specs.json (may be empty)."""
+    return str(
+        _read_json(Path(run_dir) / ws.specifications_filename).get("Description") or ""
+    )
+
+
+def write_description(run_dir, text):
+    """Replace the ``Description`` of a run's specs.json, nothing else.
+
+    The trainer only carries the string along, so a finished run stays
+    loadable and a waiting preset still trains the same. Returns the path.
+    """
+    path = Path(run_dir) / ws.specifications_filename
+    specs = _read_json(path)
+    if not specs:
+        raise FileNotFoundError(f"{path} is missing or not valid JSON.")
+    specs["Description"] = str(text)
+    path.write_text(json.dumps(specs, indent=4), encoding="utf-8")
+    return path
 
 
 def _read_json(path):

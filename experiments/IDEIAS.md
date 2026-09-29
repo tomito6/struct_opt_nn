@@ -444,6 +444,326 @@ uv run python -m datagen.make_plate_hole --dim 2 --n-uniform 25000 --n-band 2500
   (R² de cada parâmetro), não componente a componente. Ainda não há script
   pra essa comparação — é o próximo passo natural.
 
+## Atalho no desktop (27/09)
+
+O GUI agora abre por atalho: `install_shortcuts.bat` na raiz cria
+`Desktop\NN\Lattice explorer` e `Desktop\NN\SDF maker`. O que aprendi fazendo:
+
+- Atalho sem console = `pythonw.exe`, e aí `sys.stderr` é `None`. A barra do
+  tqdm do trainer (`deep_sdf/training.py`) escreve nela sem perguntar, então
+  treinar por atalho morria no primeiro epoch com `'NoneType' object has no
+  attribute 'write'`. Testar num terminal **não reproduz** — precisa forçar os
+  streams pra `None`. O launcher (`structsept/app/launcher.py`) manda tudo pra
+  `outputs/logs/<janela>.log` e desliga o tqdm (`TQDM_DISABLE=1`); a aba Train
+  lê o progresso do `Logs.pth` mesmo.
+- Importar torch + DeepSDFStruct leva 15–30 s aqui; sem splash a pessoa clica
+  duas vezes. O splash abre em menos de 1 s e a importação roda numa thread.
+- Atualiza sozinho: código, por ser install editável, já roda direto da pasta.
+  Dependência, o launcher compara o hash de `pyproject.toml` + `uv.lock` +
+  `DeepSDFStruct/pyproject.toml` com o do último `uv sync` e sincroniza quando
+  muda — menos com outra janela do structsept aberta (Windows não troca DLL
+  carregada; o log diz que pulou). `.lnk` guarda caminho absoluto,
+  então não vai pro git — cada máquina gera o seu com o `.bat`. Pro supervisor:
+  instalar `uv`, `git clone --recursive`, clicar no `.bat`.
+
+## Treino longo da placa só-raio: 8 × 256, até 4 h, sem ninguém olhando (27/09)
+
+Pedido: treinar a família `plate_hole_2d_r_only` (furo centrado, só `r` varia,
+40 raios) com hiperparâmetros "altos", começando 2 h depois do pedido e durando
+no máximo 4 h. Virou o script `experiments/train_plate_r_only_4h.py`, que
+espera até a hora marcada, treina e para sozinho no prazo.
+
+- **Tamanho da rede escolhido pelo relógio, não pelo gosto.** Torch aqui é só
+  CPU (`2.13.0+cpu`; a GTX 1660 Ti fica de fora sem trocar o pacote, e trocar
+  dependência é decisão do Tomás). Benchmark de 3 épocas, 4096 amostras por
+  forma, 40 formas, 6 threads:
+
+  | decoder | µs por ponto | s por época |
+  |---|---|---|
+  | 6 × 128 | 38 | 6,2 |
+  | **8 × 256** | **106** | **17,4** |
+  | 8 × 512 | 220 | 36,0 |
+
+  O 8 × 512 do DeepSDF original daria ~300 épocas em 3 h; o 8 × 256 dá 600
+  (~2,9 h medido no frio, sobra ~1 h pro laptop esquentar e desacelerar).
+- **Receita** (`runs/plate2d_r_only_d1_8x256_4h`): 8 × 256 ReLU, weight norm,
+  skip na camada 4, dropout 0,2 em todas (default do DeepSDF, segura a rede
+  grande), d = 1 com σ = 0,1, 4096 amostras por forma, **4 formas por batch**
+  (40/4 = 10 passos por época, nenhuma forma sobra), clamped L1 δ = 0,1, Adam
+  5e-4 / 1e-3 caindo pela metade a cada 150 épocas, 600 épocas, `latest.pth`
+  a cada 10, snapshot a cada 100. Batch de 4 em vez de 5 foi pra ter mais
+  passos de otimizador pelo mesmo custo por época (o custo é pontos por época,
+  não passos).
+- **Como ele para no prazo:** o trainer da biblioteca não tem limite de tempo,
+  mas instala um handler de Ctrl-C que faz `sys.exit(0)`. Uma thread de
+  vigia chama `_thread.interrupt_main()` no horário limite, o handler roda na
+  thread principal e o loop sai limpo; o que fica é o último `latest.pth` (no
+  máximo 10 épocas perdidas) mais os snapshots numerados. O `metadata.json`
+  grava `stopped_at_deadline` e `last_epoch`. Testado nos dois caminhos com
+  runs de 2 épocas e de 50 s antes de agendar o de verdade.
+- **Não deixar o Windows dormir:** `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`
+  enquanto espera e treina — pedido por processo, some quando ele acaba, não
+  mexe em configuração. Na tomada o laptop já não dormia (sleep = nunca no AC);
+  na bateria dormiria em 30 min, por isso o pedido.
+- **Onde olhar depois:** `runs/plate2d_r_only_d1_8x256_4h/code_vs_r.png` e
+  `code_vs_r.csv` (código aprendido × raio, Pearson/Spearman e se é monotônico —
+  o script faz essa comparação sozinho no fim), `Logs.png` (loss), e o log
+  completo em `outputs/logs/plate2d_r_only_d1_8x256_4h.log`. O run aparece na
+  tabela da GUI como qualquer outro; a aba Explore 2-D com um slider deve
+  varrer o furo de 0,07 a 0,45. Pra matar um run em andamento: o PID está em
+  `outputs/logs/<run>.pid`, `taskkill /PID <pid> /F`.
+- **Pra repetir com outro horário / outra duração:**
+  `uv run python experiments/train_plate_r_only_4h.py --start-at 01:10 --max-hours 4`
+  (`--start-at now --epochs 5` pra um teste rápido). Lançado escondido com
+  `Start-Process -WindowStyle Hidden` pra sobreviver ao fechamento do terminal.
+
+**Resultado (28/09):** rodou de 01:10 a 02:46 — 1 h 36 min pras 600 épocas,
+9,6 s por época (a máquina de madrugada, sem mais nada rodando, foi quase 2×
+mais rápida que o benchmark de dia). Loss 0,053 → 0,0043, ainda caindo em 600
+(0,0046 em 500): cabia 1000+ épocas no mesmo prazo de 4 h. O código latente
+aprendido é uma reta contra o raio: Pearson −1,000, Spearman −1,000,
+monotônico, de +0,216 (r = 0,07) a −0,173 (r = 0,45). Ou seja, com um
+parâmetro gerador, d = 1 recupera o parâmetro. A planilha de hiperparâmetros
+do supervisor está agora em `docs/hyperparameters/` (o template intacto +
+uma cópia com só a coluna Value preenchida pra este run).
+
+## GUI: runs por data, planilha do supervisor, de onde vieram os valores (28/09)
+
+Três pedidos pequenos na aba Train, todos em `tests/test_app_hyperparams.py`:
+
+- **Tabela de runs em ordem de data**, mais novo em cima. A data é o
+  `timestamp` do `metadata.json` (escrito quando o run acaba, ou quando um
+  preset é gerado). Run sem metadata (começado à mão, ou ainda treinando) é
+  datado pelo `specs.json` e aparece com `~` na frente. Clicar num cabeçalho
+  ordena por aquela coluna; clicar de novo inverte. A lista "Start from" da
+  janela de hiperparâmetros segue a mesma ordem.
+- **"Import sheet..." na janela de hiperparâmetros** lê a planilha do
+  supervisor (`docs/hyperparameters/*.xlsx`). O template não fala a língua do
+  trainer um-pra-um, então `hyperparams.from_sheet` faz a conta e diz na linha
+  de status: *Points per training step* é o batch inteiro (amostras por forma
+  = pontos ÷ *Geometries per batch*, arredondado pra baixo até par);
+  *Latent initialization variance* é por componente e o trainer sorteia
+  N(0, σ²/d), logo σ = √(variância · d); fator e intervalo de decaimento vão
+  pros dois schedules como Step. Linhas que não são configuração (nº de
+  geometrias, amostras por geometria, estratégia de amostragem, ativação,
+  otimizador) são conferidas contra o que o app faz e reportadas quando
+  discordam; linha em branco fica no default; linha que o template não tem é
+  nomeada e ignorada. Conferido: a planilha preenchida do run de 4 h
+  reproduz exatamente a receita do `train_plate_r_only_4h.py` (8 × 256,
+  σ = 0,1, 4096/4, step 150, 600 épocas).
+  O `.xlsx` é lido com `structsept/app/xlsx.py` — zip + XML da stdlib, só as
+  células de uma planilha — em vez de adicionar `openpyxl` ao ambiente
+  (adicionar dependência é decisão do Tomás; trocar por openpyxl é uma função).
+- **A janela lembra de onde vieram os valores.** Load ou Import + Apply: o
+  card diz "From run: X (loaded 14:02)", e a janela, aberta de novo, já vem
+  com essa fonte selecionada em "Start from" e a mesma frase no status — mais
+  "edited since: epochs, width" pro que foi mexido à mão depois, no card ou na
+  janela. A comparação é contra os valores como foram carregados
+  (`hyperparams.origin_summary`), então um conjunto que *começou* como o de um
+  run nunca é apresentado como se fosse o do run. "Reset to defaults" esquece
+  a fonte.
+
+## Placa só-raio com d = 2: a mesma receita, um componente a mais (28/09)
+
+Pedido: repetir o run de 4 h (`plate2d_r_only_d1_8x256_4h`) com **dois**
+componentes latentes, sabendo que só o raio varia — a pergunta é o que a rede
+faz com a dimensão que sobra.
+
+- **Planilha:** `docs/hyperparameters/NN_Training_Hyperparameters_plate2d_r_only_d2_8x256_4h.xlsx`
+  é cópia da do d = 1 com uma célula mudada (*Latent dimension* = 2). A
+  variância inicial continua 0,01 por componente, então o σ do trainer vira
+  √(0,01 · 2) = 0,141 — `hyperparams.from_sheet` faz a conta e o teste
+  `test_the_d2_sheet_is_the_same_recipe_with_a_two_component_code` confere.
+- **Script:** `experiments/train_plate_r_only_4h.py` ganhou `--latent-dim`
+  (default 1; nada muda pro run antigo). O nome do run vira
+  `plate2d_r_only_d<d>_8x256_4h`, o σ sai de `CODE_VARIANCE · d`, e a
+  comparação do fim olha cada componente contra o raio (Pearson, Spearman,
+  monotônico) e os códigos juntos: quanto da variância cai no primeiro eixo
+  principal (100 % = os 40 códigos numa reta; um parâmetro gerador não precisa
+  de mais que isso) e se a posição ao longo desse eixo segue o raio.
+  `code_vs_r.csv` tem `code_0, code_1`; `code_vs_r.png` mostra os componentes
+  contra r à esquerda e o plano latente colorido por r à direita. Testado com
+  2 épocas nos dois caminhos (d = 1 e d = 2) antes de lançar.
+- **Lançado 28/09 23:12**, escondido (`Start-Process -WindowStyle Hidden`),
+  `--latent-dim 2 --start-at now --max-hours 4`. 600 épocas devem levar
+  ~1 h 40 como no d = 1 (decoder do mesmo tamanho, só a entrada tem uma
+  coluna a mais). Log em `outputs/logs/plate2d_r_only_d2_8x256_4h.log`, PID
+  em `outputs/logs/plate2d_r_only_d2_8x256_4h.pid`.
+- **O que esperar:** (a) os códigos numa reta e um componente carrega tudo —
+  o outro fica parado perto do zero (λ = 1e-4 puxa pra lá); (b) reta
+  inclinada — os dois componentes correlacionam com r, redundantes, PC1
+  continua ~100 %; (c) curva ou nuvem — a rede usa o segundo eixo pra algo
+  que não é o raio (ruído da inicialização congelado), PC1 bem abaixo de
+  100 % e Spearman baixo num dos componentes. Só (c) seria surpresa.
+
+**Resultado (29/09):** rodou de 23:12 a 01:09 — 1 h 57 min pras 600 épocas
+(11,7 s por época; mais lento que o d = 1 de madrugada porque a GUI estava
+aberta e os testes de fumaça rodaram junto no começo). Loss final 0,0045,
+igual ao d = 1 (0,0043): o componente a mais não ajudou nem atrapalhou o
+ajuste. Saiu o caso (b), com a perpendicular sendo ruído congelado:
+
+- Os 40 códigos ficam numa **reta inclinada** a −50° no plano latente (eixo
+  principal (0,64, −0,77)), com 84,8 % da variância; a posição ao longo dela
+  é o raio: Pearson +0,999, Spearman +1,000, monotônica.
+- Cada componente sozinho correlaciona com r (código 0: +0,90, código 1:
+  −0,93) mas **não é monotônico** (22 trocas de sinal cada): é a projeção da
+  reta mais o ruído perpendicular em cada eixo.
+- O que sobra perpendicular à reta é a **inicialização congelada**:
+  correlação 0,96 entre a coordenada perpendicular na época 1 e na 600, o
+  desvio só caiu de 0,092 pra 0,053 (λ = 1e-4 encolhe devagar); zero
+  correlação com r (Pearson −0,03) e nenhuma tendência suave (R² de uma
+  parábola 0,002). O decoder nunca precisou da segunda direção, então o
+  gradiente nela é ~0 e ela fica onde o sorteio a deixou.
+- Pra GUI (Explore 2-D, dois sliders): cada slider mexe em parte ao longo
+  da reta (muda o raio) e em parte perpendicular (o decoder deve ignorar, a
+  conferir); o eixo "raio" é λ₀ − 1,2·λ₁, não nenhum dos dois sozinho.
+- Próximo passo, se interessar: medir a sensibilidade do decoder à direção
+  perpendicular (varrer ±0,1 perpendicular à reta a partir de um código do
+  meio e ver se o SDF muda). Se não mudar, o d extra é de fato morto.
+
+## Placa furo livre com d = 3: a mesma receita em 134 formas, 4 h (28/09)
+
+Pedido: treinar `plate_hole_2d_xyr` (centro **e** raio variam, 134 placas) com
+**três** componentes latentes, com a planilha do run d = 2
+(`NN_Training_Hyperparameters_plate2d_r_only_d2_8x256_4h.xlsx`), em 4 h.
+
+- **O relógio muda uma linha da receita.** Época = cada forma uma vez, então
+  134 / 4 = 33 passos por época contra 10 no `r_only`. Medido: d1 à noite
+  9,6 s/época (40 formas); d2 agora, 13,2; o `n134_d2` da GUI (8 × 256, 600
+  épocas, de dia com a máquina em uso) 52 s/época, 36 no mínimo. Logo 134
+  formas → 32–45 s/época com o laptop ocioso; as 600 épocas da planilha
+  dariam 5,5–7,5 h e não cabem. Ficou **300 épocas, lr caindo pela metade a
+  cada 75** (a mesma proporção 600/150), 9 900 passos de otimizador contra
+  6 000 do run de 600 épocas do `r_only`. `--max-hours 4` segue como rede de
+  segurança: se a máquina estiver mais lenta, para no prazo e o
+  `metadata.json` diz em que época.
+- **Planilha:** `docs/hyperparameters/NN_Training_Hyperparameters_plate2d_xyr_d3_8x256_4h.xlsx`
+  é a do d = 2 com quatro células da coluna B mudadas — geometrias 134,
+  dimensão latente 3, épocas 300, intervalo de decaimento 75 — e nada mais.
+  σ = √(0,01 · 3) = 0,173, igual ao `preset_plate2d_xyr_d3`. Teste:
+  `test_the_xyr_d3_sheet_is_the_same_recipe_sized_for_134_shapes`.
+- **Código compartilhado subiu pra `structsept/app/unattended.py`:** log em
+  arquivo + `.pid`, espera até a hora, `KeepAwake`, `prepare_run` genérico
+  (dataset + dict de hiperparâmetros), o vigia do prazo, leitura dos códigos
+  e do split. Segundo script precisando da mesma coisa → sobe pra
+  `structsept/` (regra do `docs/structure.md`); `train_plate_r_only_4h.py`
+  ficou só com a receita e a checagem do raio, mesma CLI. Testes em
+  `tests/test_app_unattended.py`.
+- **Script novo:** `experiments/train_plate_xyr_4h.py`. Além das flags do
+  irmão: `--after <pid ou .pid>` espera outro processo terminar antes de
+  treinar (encadear runs sem adivinhar a hora em que o anterior acaba; os
+  dois scripts ganharam isso), `--decay-interval` (default: épocas / 4) e
+  `--check-only --run X`, que roda só a comparação do fim num run já treinado.
+- **Comparação do fim (`code_vs_params.csv/json/png` no diretório do run):**
+  Pearson e Spearman de cada componente com cada parâmetro (tabela d × 3),
+  o **ajuste afim (x_c, y_c, r) = W·λ + b** por mínimos quadrados com R² e
+  RMSE (em unidades de projeto) de cada parâmetro — a comparação por
+  regressão que o item de 23/09 pedia e ainda não existia —, o ajuste inverso
+  (quão linear é cada componente nos parâmetros) e a variância dos códigos ao
+  longo dos eixos principais. O `.png` é um grid: cada código contra cada
+  parâmetro, e embaixo o ajustado contra o verdadeiro.
+- **Já rodei essa checagem no run d = 2 da GUI**
+  (`runs/plate_hole_2d_n134_d2_20260928_1338`, mesmo dataset byte a byte,
+  8 × 256, 600 épocas, loss final 0,0085): código 0 ↔ `y_c` (Pearson 0,87),
+  código 1 ↔ `x_c` (0,87), e **`r` não está no código: R² 0,009** (x_c 0,76,
+  y_c 0,79; variância 53 / 47 % nos dois eixos). Com 25 placas o d = 2 tinha
+  guardado `y_c` e largado `x_c`; com 134 guardou o centro e largou o raio.
+  Faz sentido: mover o furo muda o SDF na placa inteira, mudar o raio muda
+  uma faixa em volta dele — com dois números a rede fica com os dois que
+  mais pesam na loss. É o argumento pro d = 3.
+- **Lançado 28/09 ~23:55**, escondido (`Start-Process -WindowStyle Hidden`),
+  `--after outputs/logs/plate2d_r_only_d2_8x256_4h.pid --max-hours 4`:
+  espera o run d = 2 acabar (~01:25 no ritmo atual; no máximo 03:12, que é o
+  prazo dele) e treina até 4 h. Previsão: 300 épocas em 2,7–3,7 h → pronto
+  entre ~04:00 e ~05:15. Log em `outputs/logs/plate2d_xyr_d3_8x256_4h.log`,
+  PID no `.pid` ao lado. Antes de lançar: `--epochs 1` num run de teste
+  (78 s com o d2 rodando junto) e `--check-only` no run acima.
+- **O que esperar:** (a) R² ≈ 1 nos três parâmetros e três eixos com
+  variância parecida — o código é uma re-rotulagem afim de (x_c, y_c, r),
+  e a aba Explore 2-D com três sliders varre centro e raio; (b) `x_c` e `y_c`
+  altos e `r` baixo de novo — a terceira dimensão sobrou pra ruído e o raio
+  precisa de outra coisa (mais épocas, λ menor, ou o clamp de 0,1 esconde
+  os furos pequenos, r de 0,07); (c) Spearman alto e R² afim baixo — os
+  parâmetros estão lá mas curvos; olhar o grid de dispersão antes de julgar.
+
+**Resultado (29/09):** esperou o d = 2 acabar (01:09) e rodou de 01:09 a
+03:56 — 2 h 47 min pras 300 épocas (33,4 s por época, bem no meio da
+previsão), parou sozinho, sem bater no prazo. Loss final 0,0064 — abaixo
+dos 0,0085 do d = 2 da GUI com o dobro de épocas. Saiu um misto de (a) e (c),
+um parâmetro por vez (`runs/plate2d_xyr_d3_8x256_4h/code_vs_params.png`):
+
+| parâmetro | R² afim | RMSE (un. projeto) | R² quadrático | onde está |
+|---|---|---|---|---|
+| `x_c` | **0,988** | 0,025 | 0,990 | código 1 (Pearson −0,85), linear |
+| `r` | **0,857** | 0,025 | 0,905 | código 0 (Pearson +0,81), convexo: achatado nos furos pequenos, sobe rápido acima de r ≈ 0,2 |
+| `y_c` | 0,741 | 0,114 | 0,786 | espalhado nos códigos 1 e 2 (Pearson +0,46 / −0,56), dobrado |
+
+- **O raio entrou.** Era o que o d = 2 tinha largado (R² 0,009); com a terceira
+  dimensão ele é o segundo parâmetro mais bem guardado, e a variância dos
+  códigos fica 49 / 28 / 23 % nos três eixos — a rede usa as três direções.
+- **`y_c` é o problema, e só na metade de baixo.** RMSE 0,164 pras placas com
+  y_c < 0,45 contra 0,051 pras de cima; as cinco piores são furos perto da
+  borda inferior (y_c 0,12–0,16) que o ajuste põe em 0,42–0,46 — o código
+  não distingue "furo embaixo" de "furo no meio". Não é só curvatura: o
+  ajuste quadrático quase não melhora (0,786). Como a placa é simétrica em
+  x e y, a diferença entre x_c (perfeito) e y_c é acidente de treino — a
+  direção que os códigos alinharam cedo —, não geometria.
+- **Próximo passo natural:** olhar na aba Explore 2-D (três sliders) se o
+  furo desce até a borda inferior ou trava no meio; se travar, os candidatos
+  são mais épocas (a loss ainda oscilava 0,006–0,007 no fim) ou σ inicial
+  maior pra espalhar os códigos antes do λ puxar. Um segundo seed diria se a
+  dobra em y_c se repete.
+
+## GUI: editar runs e decoders, tabela maior, dropdown do Explore 2-D (29/09)
+
+Três pedidos feitos, todos em `tests/test_app_runs.py`, e uma pendência:
+
+- **Editar um run — ou um decoder "trained here", que é a mesma pasta.** Na
+  tabela de runs: botões *Open*, *Edit...*, *Load hyperparameters*,
+  *Delete...* e *Refresh*, mais o menu do botão direito (e F2 / Delete na
+  linha selecionada). *Edit...* abre uma janelinha
+  (`structsept/app/run_editor.py`) com o nome e as notas do run: o nome é a
+  pasta em `runs/`, renomear renomeia o decoder em todo lugar (a tabela e os
+  dois pickers releem o disco na hora); as notas são o `Description` que o
+  trainer já guarda no `specs.json` — ele só carrega a string, então run
+  pronto continua carregando e preset esperando treina igual — e viram a
+  última coluna da tabela. *Load hyperparameters* é o "Start from" sem
+  procurar na lista. *Delete...* pergunta antes, recusa pasta sem
+  `specs.json` e não tem volta. O run que está treinando agora fica travado
+  pros três. O mesmo *Edit...* está no picker das duas abas Explore; fica
+  cinza nos decoders da biblioteca, que não são runs.
+- **Tabela de runs maior:** ficou com a metade larga da aba (3:2 em vez de
+  2:3), 18 linhas em vez de 10, e as colunas de texto (run, notes) crescem
+  com a janela; as numéricas não.
+- **Dropdown do Explore 2-D (e do Explore) na largura do nome mais longo**
+  (`widgets.combo_width`, entre 44 e 96 caracteres). Era 40 fixo e cortava
+  `plate_hole_2d_n134_d2_20260928_1338 - d=2, 134 shapes (trained here)`.
+
+### Pendência: duas GUIs ao mesmo tempo
+
+Já funciona hoje, sem mexer em nada: cada janela é um processo com o seu
+próprio Tk e o seu próprio estado (o `busy` é por janela, então dá pra
+explorar numa enquanto a outra treina), o lock do atalho tem 16 vagas e o log
+do launcher abre em modo append — dois cliques no atalho, ou dois
+`uv run python -m structsept.app.main`. O que elas dividem é o disco,
+`runs/` acima de tudo, e é aí que uma pode atrapalhar a outra:
+
+- run que termina numa janela só aparece na outra depois de *Refresh* (as
+  listas releem o disco nos eventos do próprio app, não num timer);
+- mesmo nome de run nas duas = colisão: o nome automático tem resolução de
+  minuto (`<dataset>_d<d>_<aaaammdd_hhmm>`), duas janelas no mesmo dataset no
+  mesmo minuto escreveriam na mesma pasta — digitar o nome resolve;
+- renomear/apagar na janela A um run que a B está treinando: o Windows recusa
+  enquanto um arquivo dele estiver aberto, senão quebra o run da B no próximo
+  checkpoint (`run_editor.training_now` só enxerga o run da própria janela);
+- dois treinos dividem a CPU: o torch usa todos os núcleos e o tempo por
+  época dos dois sobe (foi por isso que os scripts de 4 h rodaram um depois do
+  outro).
+
+Pra ficar "sem se influenciar" de verdade faltam duas coisas baratas
+(~30 linhas): sufixo de segundos + PID no nome automático, e um timer de
+refresh nas listas. Não fiz; fica na fila.
+
 ## Perguntas em aberto
 
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram

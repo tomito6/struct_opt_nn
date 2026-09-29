@@ -45,7 +45,7 @@ def card(parent, palette, title=None, subtitle=None, padding=10):
     return outer, body
 
 
-def log_box(parent, palette, height=10):
+def log_box(parent, palette, height=10, width=80):
     """Read-only scrolling text widget in the log's monospace font."""
     frame = tk.Frame(
         parent,
@@ -55,7 +55,7 @@ def log_box(parent, palette, height=10):
         highlightthickness=1,
         bd=0,
     )
-    text = tk.Text(frame, height=height, state="disabled")
+    text = tk.Text(frame, height=height, width=width, state="disabled")
     theme_mod.style_text(text, palette)
     bar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
     text.configure(yscrollcommand=bar.set)
@@ -110,6 +110,20 @@ def peek_int(var):
         return int(var.get())
     except (tk.TclError, ValueError):
         return None
+
+
+def combo_width(labels, low=44, high=96) -> int:
+    """Width, in characters, that shows the longest of ``labels`` in full.
+
+    A ``ttk.Combobox`` is sized in average character widths and clips
+    anything longer - in the entry and in the drop-down list alike, since
+    the list is as wide as the entry. At the old fixed 40 a run called
+    ``plate_hole_2d_n134_d2_20260928_1338`` lost its tail. Bounded below so
+    an empty list still gives a usable box, and above so one absurd name
+    cannot push the buttons off the row.
+    """
+    longest = max((len(str(label)) for label in labels), default=0)
+    return int(min(high, max(low, longest + 2)))
 
 
 def metric(parent, palette, label):

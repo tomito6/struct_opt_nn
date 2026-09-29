@@ -30,6 +30,7 @@ from structsept.app import (
     datasets,
     hparam_window,
     hyperparams,
+    run_editor,
     runtime,
     tab_explore,
     tab_explore2d,
@@ -48,6 +49,11 @@ def build(st, parent, data_root, runs_dir):
     st["tr_data_root"] = Path(data_root)
     st["tr_runs_dir"] = Path(runs_dir)
     st["tr_hparams"] = hyperparams.defaults()
+    # where the current set was loaded from ("Start from" / "Import sheet"),
+    # or None: see hyperparams.origin_summary
+    st["tr_hp_origin"] = None
+    # where the sheet file dialog opens; the supervisor's templates live here
+    st["tr_sheet_dir"] = Path(runs_dir).parent / "docs" / "hyperparameters"
     hp = st["tr_hparams"]
     st["tr_latent_dim"] = tk.IntVar(value=hp["latent_dim"])
     st["tr_n_layers"] = tk.IntVar(value=hp["n_layers"])
@@ -66,8 +72,10 @@ def build(st, parent, data_root, runs_dir):
     body.pack(fill="both", expand=True, pady=(8, 0))
     left = ttk.Frame(body)
     right = ttk.Frame(body)
-    body.add(left, weight=3)
-    body.add(right, weight=2)
+    # the runs table gets the wider half: a run name plus its notes is the
+    # longest thing on this tab, and the loss curve reads fine at half width
+    body.add(left, weight=2)
+    body.add(right, weight=3)
 
     _build_progress(st, left, palette)
     _build_runs(st, right, palette)
@@ -204,35 +212,83 @@ def _build_progress(st, parent, palette):
     viz.draw_loss_curve(st["tr_ax"], [], palette=palette)
     st["tr_canvas"].draw_idle()
 
-    frame, st["tr_log"] = widgets.log_box(body, palette, height=12)
+    # width is only the requested size, the box still fills the card: at the
+    # default 80 columns the log alone claims the wider half of the paned
+    # window and squeezes the runs table
+    frame, st["tr_log"] = widgets.log_box(body, palette, height=12, width=48)
     frame.pack(fill="both", expand=True, pady=(8, 0))
+
+
+# Runs table: (row key, tree column, heading, width). "#0" is the tree column.
+# Spare width goes to the two text columns; the numbers keep theirs, so a
+# wide table does not spread them out.
+RUN_COLUMNS = (
+    ("name", "#0", "run", 250),
+    ("dataset", "dataset", "dataset", 150),
+    ("latent_dim", "d", "d", 28),
+    ("epochs", "epochs", "epochs", 52),
+    ("final_loss", "loss", "final loss", 66),
+    ("date", "date", "date", 132),
+    ("description", "notes", "notes", 140),
+)
+STRETCH_COLUMNS = ("name", "description")
+RUNS_ROWS = 18
 
 
 def _build_runs(st, parent, palette):
     outer, body = widgets.card(
-        parent, palette, "Runs", "double-click to open in the Explore tab"
+        parent,
+        palette,
+        "Runs",
+        "newest first · click a heading to sort · double-click to open · "
+        "right-click for more",
     )
     outer.pack(fill="both", expand=True)
 
-    columns = ("dataset", "d", "epochs", "loss", "date")
-    tree = ttk.Treeview(body, columns=columns, show="tree headings", height=10)
-    tree.heading("#0", text="run")
-    tree.column("#0", width=150, anchor="w")
-    for key, title, width in (
-        ("dataset", "dataset", 90),
-        ("d", "d", 30),
-        ("epochs", "epochs", 50),
-        ("loss", "final loss", 70),
-        ("date", "date", 90),
-    ):
-        tree.heading(key, text=title)
-        tree.column(key, width=width, anchor="w")
-    bar = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+    table = ttk.Frame(body, style="Card.TFrame")
+    table.pack(fill="both", expand=True)
+    columns = tuple(col for _, col, _, _ in RUN_COLUMNS if col != "#0")
+    tree = ttk.Treeview(table, columns=columns, show="tree headings", height=RUNS_ROWS)
+    for key, col, title, width in RUN_COLUMNS:
+        tree.heading(col, text=title, command=lambda k=key: sort_runs(st, k))
+        tree.column(col, width=width, anchor="w", stretch=key in STRETCH_COLUMNS)
+    bar = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=bar.set)
     tree.pack(side="left", fill="both", expand=True)
     bar.pack(side="right", fill="y")
     tree.bind("<Double-1>", lambda e: _open_in_explore(st))
+    tree.bind("<Button-3>", lambda e: _popup_menu(st, e))
+    tree.bind("<F2>", lambda e: edit_run(st))
+    tree.bind("<Delete>", lambda e: delete_run(st))
     st["tr_tree"] = tree
+    st["tr_runs"] = []
+    st["tr_runs_sort"] = ("date", True)  # (row key, descending)
+
+    # the same actions as buttons under the table and as the right-click menu
+    actions = ttk.Frame(body, style="Card.TFrame")
+    actions.pack(fill="x", pady=(8, 0))
+    menu = tk.Menu(tree, tearoff=0)
+    st["tr_run_buttons"] = {}
+    for key, text, command in RUN_ACTIONS:
+        button = ttk.Button(
+            actions,
+            text=text,
+            style="CardGhost.TButton",
+            command=lambda c=command: c(st),
+        )
+        button.pack(side="left", padx=(0, 6))
+        st["tr_run_buttons"][key] = button
+        menu.add_command(label=text, command=lambda c=command: c(st))
+    st["tr_run_menu"] = menu
+    ttk.Button(
+        actions,
+        text="Refresh",
+        style="CardGhost.TButton",
+        command=lambda: refresh_runs(st),
+    ).pack(side="right")
+    # a run renamed or deleted on an Explore tab, or finished in another
+    # window and refreshed there, is re-read here through run_editor
+    st.setdefault("run_listeners", []).append(lambda: refresh_runs(st))
 
 
 # --------------------------------------------------------------------------- #
@@ -254,12 +310,53 @@ def refresh_datasets(st):
 
 
 def refresh_runs(st):
+    """Re-read the run directories and redraw the table in the current order."""
+    st["tr_runs"] = training.list_runs(st["tr_runs_dir"])
+    _fill_runs(st)
+
+
+def sort_runs(st, key):
+    """Sort the runs table by a column; the same column again flips the
+    direction. Dates start newest first, everything else ascending."""
+    current, descending = st["tr_runs_sort"]
+    if key == current:
+        descending = not descending
+    else:
+        descending = key == "date"
+    st["tr_runs_sort"] = (key, descending)
+    _fill_runs(st)
+
+
+def _run_sort_key(key):
+    """Sort key for one column: text case-insensitively, numbers as numbers,
+    missing values (a run without metadata) last in either direction."""
+
+    def value(row):
+        raw = row.get(key)
+        if key in ("latent_dim", "epochs", "final_loss"):
+            missing = not isinstance(raw, (int, float))
+            return (missing, 0 if missing else float(raw))
+        return (raw is None, str(raw or "").lower())
+
+    return value
+
+
+def _fill_runs(st):
     tree = st["tr_tree"]
+    key, descending = st["tr_runs_sort"]
+    selected = selected_run(st)
+    keep = selected["name"] if selected else None
     tree.delete(*tree.get_children())
-    for row in training.list_runs(st["tr_runs_dir"]):
+    for row_key, col, title, _ in RUN_COLUMNS:
+        mark = "" if row_key != key else ("  ▾" if descending else "  ▴")
+        tree.heading(col, text=title + mark)
+    rows = sorted(st["tr_runs"], key=_run_sort_key(key), reverse=descending)
+    for row in rows:
         loss = row.get("final_loss")
         date = (row.get("date") or "")[:16].replace("T", " ")
-        tree.insert(
+        if date and row.get("date_is_estimate"):
+            date = "~" + date  # from the specs file, not a finished run
+        item = tree.insert(
             "",
             "end",
             text=row["name"],
@@ -269,16 +366,128 @@ def refresh_runs(st):
                 row.get("epochs") if row.get("epochs") is not None else "?",
                 f"{loss:.4f}" if isinstance(loss, (int, float)) else "-",
                 date,
+                # one line in the table; the editor shows the notes in full
+                " ".join(str(row.get("description") or "").split()),
             ),
         )
+        if row["name"] == keep:
+            tree.selection_set(item)
+
+
+def selected_run(st):
+    """The ``training.list_runs`` row selected in the table, or ``None``."""
+    selection = st["tr_tree"].selection()
+    if not selection:
+        return None
+    name = st["tr_tree"].item(selection[0], "text")
+    return next((r for r in st["tr_runs"] if r["name"] == name), None)
+
+
+def _require_selection(st):
+    row = selected_run(st)
+    if row is None:
+        messagebox.showinfo("No run selected", "Click a run in the table first.")
+    return row
+
+
+def _select_row(st, name) -> bool:
+    """Select and scroll to the row of run ``name``, if the table has it."""
+    tree = st["tr_tree"]
+    for item in tree.get_children():
+        if tree.item(item, "text") == name:
+            tree.selection_set(item)
+            tree.focus(item)
+            tree.see(item)
+            return True
+    return False
+
+
+def edit_run(st):
+    """Rename the selected run or change its notes, in the shared editor."""
+    row = _require_selection(st)
+    if row is None:
+        return None
+    return run_editor.open_editor(
+        st, st["tr_runs_dir"], row["name"], on_done=lambda name: _select_row(st, name)
+    )
+
+
+def delete_run(st) -> bool:
+    """Delete the selected run directory, after a confirmation."""
+    row = _require_selection(st)
+    if row is None:
+        return False
+    name = row["name"]
+    if run_editor.training_now(st, name):
+        messagebox.showinfo(
+            "Training", f"'{name}' is being trained right now; wait for it to finish."
+        )
+        return False
+    contents = (
+        "specs, checkpoints, latent codes and logs"
+        if row.get("trained")
+        else "its specs and metadata"
+    )
+    if not messagebox.askyesno(
+        "Delete run",
+        f"Delete '{name}' - {contents}?\n\n{row['path']}\n\nThis cannot be undone.",
+        icon="warning",
+        default="no",
+    ):
+        return False
+    try:
+        training.delete_run(st["tr_runs_dir"], name)
+    except (OSError, ValueError) as exc:
+        messagebox.showerror("Delete run", f"Could not delete '{name}':\n{exc}")
+        run_editor.runs_changed(st)  # show whatever is left of it
+        return False
+    widgets.append(st["tr_log"], f"Run '{name}' deleted.")
+    run_editor.runs_changed(st)
+    return True
+
+
+def load_run_hparams(st):
+    """Open the hyperparameter window with the selected run's settings loaded.
+
+    The same as picking the run under "Start from" and pressing Load - one
+    click from the table instead of a search through that list.
+    """
+    row = _require_selection(st)
+    if row is None:
+        return None
+    window = open_hparams(st)
+    label = f"run: {row['name']}"
+    if label not in window.sources:
+        # the window was already open when this run appeared on disk
+        window.status.set(
+            f"'{row['name']}' is not in this window's Start from list; "
+            "close the window and try again."
+        )
+        return window
+    window.source_combo.set(label)
+    window.load_selected()
+    return window
+
+
+def _popup_menu(st, event):
+    """Right-click: select the row under the pointer, then show the actions."""
+    tree = st["tr_tree"]
+    item = tree.identify_row(event.y)
+    if item:
+        tree.selection_set(item)
+        tree.focus(item)
+    try:
+        st["tr_run_menu"].tk_popup(event.x_root, event.y_root)
+    finally:
+        st["tr_run_menu"].grab_release()
 
 
 def _open_in_explore(st):
     """Hand a run to the explorer that can show it: lattice or planar."""
-    selection = st["tr_tree"].selection()
-    if not selection:
+    row = selected_run(st)
+    if row is None:
         return
-    name = st["tr_tree"].item(selection[0], "text")
+    name = row["name"]
     tab_explore.refresh_models(st)
     tab_explore2d.refresh_models(st)
     if tab_explore.select_model(st, name):
@@ -290,6 +499,16 @@ def _open_in_explore(st):
             "Not loadable",
             f"'{name}' has no saved checkpoint yet, so the explorer cannot open it.",
         )
+
+
+# (state key, button text, action): the buttons under the runs table and the
+# entries of its right-click menu, in this order
+RUN_ACTIONS = (
+    ("open", "Open", _open_in_explore),
+    ("edit", "Edit...", edit_run),
+    ("hparams", "Load hyperparameters", load_run_hparams),
+    ("delete", "Delete...", delete_run),
+)
 
 
 def _update_readiness(st):
@@ -380,7 +599,7 @@ def open_hparams(st):
     return hparam_window.open_window(
         st,
         current_hparams(st, commit=True),
-        lambda hp: apply_hparams(st, hp),
+        lambda hp, origin: apply_hparams(st, hp, origin),
         n_shapes=row["n_instances"] if row is not None else None,
         dataset=row["name"] if row is not None else None,
         sources=training.spec_sources(st["tr_runs_dir"]),
@@ -389,16 +608,32 @@ def open_hparams(st):
             str(st["tr_data_root"]),
         ),
         geom_dimension=_geom(row),
+        origin=st.get("tr_hp_origin"),
+        sheet_dir=st.get("tr_sheet_dir"),
     )
 
 
-def apply_hparams(st, hp):
-    """Make ``hp`` the set the next run trains with, card spinboxes included."""
+def apply_hparams(st, hp, origin=None):
+    """Make ``hp`` the set the next run trains with, card spinboxes included.
+
+    ``origin`` is where the window's draft was loaded from (a run, a shipped
+    decoder, a sheet), or None for values typed in or reset; it is kept so
+    the card and the next opening of the window can say so.
+    """
     before = current_hparams(st)
+    previous_origin = st.get("tr_hp_origin")
     st["tr_hparams"] = dict(hp)
+    st["tr_hp_origin"] = origin
+    if origin and origin.get("path"):
+        # the next file dialog opens where the last sheet came from
+        path = Path(origin["path"])
+        if path.suffix.lower() in hparam_window.SHEET_SUFFIXES and path.is_file():
+            st["tr_sheet_dir"] = path.parent
     for key, var_name in CARD_VARS.items():
         st[var_name].set(hp[key])
     _update_hp_summary(st)
+    if origin and origin != previous_origin:
+        widgets.append(st["tr_log"], f"Hyperparameters loaded from {origin['label']}.")
     diff = [
         f"{f.full_label}: {hyperparams.format_value(f, before[f.key]) or f.blank} -> "
         f"{hyperparams.format_value(f, hp[f.key]) or f.blank}"
@@ -433,7 +668,10 @@ def _update_hp_summary(st):
         )
         st["tr_hp_summary_label"].configure(style="Card.Danger.TLabel")
     else:
-        st["tr_hp_summary"].set(hyperparams.summary(hp))
+        origin = hyperparams.origin_summary(st.get("tr_hp_origin"), hp)
+        st["tr_hp_summary"].set(
+            (origin + "\n" if origin else "") + hyperparams.summary(hp)
+        )
         st["tr_hp_summary_label"].configure(style="Card.Subtle.TLabel")
 
 
@@ -567,6 +805,4 @@ def _training_done(st):
         )
         st["tr_canvas"].draw_idle()
     st["tr_watch_dir"] = None
-    refresh_runs(st)
-    tab_explore.refresh_models(st)
-    tab_explore2d.refresh_models(st)
+    run_editor.runs_changed(st)

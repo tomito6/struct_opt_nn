@@ -98,12 +98,20 @@ def _pick(root, families, default):
     return default
 
 
-def apply_theme(root: tk.Misc, base_theme: str = "clam") -> dict:
+def apply_theme(
+    root: tk.Misc, base_theme: str = "clam", matplotlib: bool = True
+) -> dict:
     """Style ``root`` and return the palette, fonts included.
 
     Call this right after ``tk.Tk()`` and *before* building any widget:
     ``option_add`` only reaches widgets created afterwards, so a later call
     leaves every ``tk.Text``, ``tk.Canvas`` and combobox popup unstyled.
+
+    ``matplotlib=False`` skips the rcParams step, which is the one part that
+    imports matplotlib (and numpy and Pillow with it). The desktop launcher
+    needs the Tk half of the theme for its splash *before* it may run
+    ``uv sync``, and a package whose DLLs are already loaded cannot be
+    replaced on Windows; the app applies the full theme afterwards.
 
     The returned dict also carries ``_errors``, the list of styling steps that
     did not apply - without it the guards would make a typo invisible.
@@ -618,7 +626,8 @@ def apply_theme(root: tk.Misc, base_theme: str = "clam") -> dict:
         background=[("active", p["surface_alt"])],
     )
 
-    apply_matplotlib_style(p)
+    if matplotlib:
+        apply_matplotlib_style(p)
     return p
 
 

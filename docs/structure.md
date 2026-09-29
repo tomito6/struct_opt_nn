@@ -57,11 +57,15 @@ code/                        <- VS Code workspace root
 │   ├── fem.py                   tetrahedral meshing + stiffness assembly
 │   └── app/                     Tkinter applications (two windows)
 │       ├── main.py                  shell: Explore, Explore 2-D, Train tabs
+│       ├── launcher.py              desktop shortcuts: splash, log file, --install
+│       ├── icons/                   the shortcuts' .ico files (launcher --icons)
 │       ├── tab_explore.py           drive f_theta by moving control points
 │       ├── tab_explore2d.py         planar decoders: one slider per λ
 │       ├── tab_train.py             dataset -> decoder, loss curve, run list
 │       ├── hparam_window.py         the "All hyperparameters..." window
+│       ├── run_editor.py            rename a run / edit its notes (shared window)
 │       ├── hyperparams.py           every specs.json key: schema, checks, I/O
+│       ├── xlsx.py                  cells of an .xlsx, stdlib only (sheet import)
 │       ├── sdf_maker.py             separate window: meshes -> dataset
 │       ├── theme.py                 ttk styles, palette, matplotlib rcParams
 │       ├── widgets.py               cards, log boxes, control-point grid
@@ -91,7 +95,9 @@ code/                        <- VS Code workspace root
 │   ├── test_datagen.py              exact field, file contract, 2-D training
 │   ├── test_app_explore.py          Explore tab regressions (off-screen Tk)
 │   ├── test_app_explore2d.py        2-D dataset -> Train tab -> Explore 2-D
-│   └── test_app_hyperparams.py      hyperparameter schema, trainer, window
+│   ├── test_app_hyperparams.py      hyperparameter schema, trainer, window
+│   ├── test_app_runs.py             rename / notes / delete runs, from every list
+│   └── test_app_launcher.py         console-less streams, splash handover, .lnk
 │
 ├── docs/
 │   ├── structure.md                 this file
@@ -99,12 +105,14 @@ code/                        <- VS Code workspace root
 │   ├── paper_context.md             the reference paper, distilled
 │   ├── context-maintenance.md       procedure for keeping CLAUDE.md current
 │   ├── context-log.md               one entry per maintenance pass
-│   └── stiffness_theory/            Typst source + figures -> stiffness_theory.pdf
+│   ├── stiffness_theory/            Typst source + figures -> stiffness_theory.pdf
+│   └── hyperparameters/             the supervisor's xlsx template + one filled sheet per run
 │
 ├── DeepSDFStruct/          GIT SUBMODULE — the library the project is built on
 │
 ├── data/  runs/  outputs/           generated, all gitignored
 ├── CLAUDE.md                        instructions loaded into every AI session
+├── install_shortcuts.bat            desktop shortcuts for this clone (uv sync + launcher --install)
 └── pyproject.toml                   deps + the two editable installs
 ```
 
@@ -148,6 +156,10 @@ uv run python -m structsept.app.main
 
 # the GUI: dataset builder, a separate window
 uv run python -m structsept.app.sdf_maker
+
+# the GUI from the desktop: writes Desktop\NN\*.lnk for this clone (per machine,
+# never committed); the double-click version is install_shortcuts.bat
+uv run python -m structsept.app.launcher --install
 
 # tests
 uv run pytest tests/ -v

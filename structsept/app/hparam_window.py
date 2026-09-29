@@ -23,6 +23,14 @@ from the draft - the unambiguous answer to "what exactly will the trainer
 see?". Under both, the *Checks* panel lists what ``hyperparams.validate``
 found; clicking a line jumps to the value it is about.
 
+The toolbar fills the draft from elsewhere: "Start from" with the specs.json
+of a run or a shipped decoder, "Import sheet..." with the supervisor's Excel
+template (``docs/hyperparameters/``). Either way the window remembers the
+source and hands it on with Apply, so the Train card says "From run: X" and
+the window, opened again later, shows that source selected and lists what
+was edited by hand since - instead of an empty "Start from" box over values
+nobody can place.
+
 The learning-rate card is laid out as a table rather than two stacked copies:
 the trainer's Adam has two parameter groups, decoder weights and latent codes,
 each with its own schedule, and the six rows of a schedule mean the same thing
@@ -34,12 +42,15 @@ from __future__ import annotations
 
 import json
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
-from structsept.app import hyperparams, runtime, theme, widgets
+from structsept.app import hyperparams, runtime, theme, widgets, xlsx
 from structsept.app.hyperparams import ERROR, NOTE, WARNING
 
+SHEET_SUFFIXES = xlsx.SUFFIXES
+SHEET_FILETYPES = (("Excel workbook", "*.xlsx *.xlsm"), ("All files", "*.*"))
 VALIDATE_MS = 150
 HELP_WRAP = 470
 MAX_ISSUES = 6
@@ -94,7 +105,10 @@ class HyperparamWindow:
     hp : dict
         Starting values. Copied; the caller's dict is never touched.
     on_apply : callable
-        Receives the validated hyperparameter set on Apply.
+        Receives ``(hp, origin)`` on Apply: the validated hyperparameter set
+        and where the draft was loaded from - ``{"label", "path", "hp",
+        "when"}`` after "Load" or "Import sheet", None after typing or
+        "Reset to defaults" (see ``hyperparams.origin_summary``).
     n_shapes : int, optional
         Shapes in the dataset selected on the Train tab, for the batch check.
     dataset : str, optional
@@ -106,6 +120,12 @@ class HyperparamWindow:
     geom_dimension : int, optional
         Coordinates per sample of that dataset, for the width checks and the
         preview.
+    origin : dict, optional
+        What the last Apply handed to ``on_apply`` as its origin. The window
+        opens with that source selected and says in the status line where
+        the values came from and what was edited since.
+    sheet_dir : path-like, optional
+        Where the "Import sheet" file dialog opens.
     """
 
     def __init__(
@@ -118,6 +138,8 @@ class HyperparamWindow:
         sources=(),
         preview_paths=("<split of the selected dataset>", "<data root>"),
         geom_dimension=hyperparams.GEOM_DIMENSION,
+        origin=None,
+        sheet_dir=None,
     ):
         self.st = st
         self.palette = st["palette"]
@@ -127,6 +149,9 @@ class HyperparamWindow:
         self.sources = {label: Path(path) for label, path in sources}
         self.preview_paths = preview_paths
         self.initial = {k: _copy(v) for k, v in hp.items()}
+        # where the draft's values were loaded from; handed on with Apply
+        self.origin = origin
+        self.sheet_dir = None if sheet_dir is None else Path(sheet_dir)
 
         self.vars: dict[str, tk.Variable] = {}
         self.inputs: dict[str, tk.Widget] = {}
@@ -159,6 +184,7 @@ class HyperparamWindow:
         self._build_pages()
 
         self._set_draft(self.initial)
+        self._show_origin()
         for var in self.vars.values():
             var.trace_add("write", lambda *_: self._schedule())
         self._revalidate()
@@ -191,6 +217,12 @@ class HyperparamWindow:
         ttk.Button(
             bar, text="Load", style="Ghost.TButton", command=self.load_selected
         ).pack(side="left")
+        ttk.Button(
+            bar,
+            text="Import sheet...",
+            style="Ghost.TButton",
+            command=self.import_sheet,
+        ).pack(side="left", padx=(10, 0))
         ttk.Button(
             bar, text="Reset to defaults", style="Ghost.TButton", command=self.reset
         ).pack(side="left", padx=(10, 0))
@@ -650,15 +682,80 @@ class HyperparamWindow:
             # *structure* is off (NetworkSpecs a list, say) can still raise
             self.status.set(f"Could not use {path}: {exc!r}")
             return
+        self._loaded(hp, label, path, f"Loaded the settings of {label}.", notes)
+
+    def import_sheet(self):
+        """Ask for the supervisor's sheet and load it into the draft."""
+        initial = self.sheet_dir if self.sheet_dir and self.sheet_dir.is_dir() else None
+        path = filedialog.askopenfilename(
+            parent=self.top,
+            title="Import a hyperparameter sheet",
+            initialdir=str(initial) if initial else None,
+            filetypes=SHEET_FILETYPES,
+        )
+        if not path:
+            return
+        self.load_sheet(path)
+
+    def load_sheet(self, path):
+        """Replace the draft with the values of an Excel sheet laid out like
+        ``docs/hyperparameters/NN_Training_Hyperparameters_Template_Clean.xlsx``.
+
+        Rows the template does not have, values the app cannot take as
+        written, and the arithmetic behind the derived ones (points per step
+        -> samples per shape, variance -> spread) are reported in the status
+        line; see ``hyperparams.from_sheet``.
+        """
+        path = Path(path)
+        try:
+            rows = xlsx.read_rows(path)
+        except ValueError as exc:
+            self.status.set(f"Could not read {path.name}: {exc}")
+            return
+        try:
+            hp, notes = hyperparams.from_sheet(rows, self.n_shapes)
+        except Exception as exc:  # noqa: BLE001 - any sheet at all can be picked
+            self.status.set(f"Could not use {path.name}: {exc!r}")
+            return
+        taken = len(hyperparams.changed(hp, include_card=True))
+        self.sheet_dir = path.parent
+        self._loaded(
+            hp,
+            f"sheet: {path.name}",
+            path,
+            f"Imported {path.name}: {taken} value(s) differ from the defaults.",
+            notes,
+        )
+
+    def _loaded(self, hp, label, path, message, notes):
+        """Put a loaded set into the draft and remember where it came from."""
         self._set_draft(hp)
-        message = f"Loaded the settings of {label}."
+        self.origin = {
+            "label": label,
+            "path": str(path),
+            "hp": {k: _copy(v) for k, v in hp.items()},
+            "when": datetime.now().strftime("%H:%M"),
+        }
+        if label in self.sources:
+            self.source_combo.set(label)
         if notes:
             message += "  " + "  ".join(notes)
         self.status.set(message)
         self._revalidate()
 
+    def _show_origin(self):
+        """Say where the values the window opened with came from."""
+        if not self.origin:
+            return
+        label = self.origin.get("label", "")
+        if label in self.sources:
+            self.source_combo.set(label)
+        self.status.set(hyperparams.origin_summary(self.origin, self.initial))
+
     def reset(self):
         self._set_draft(hyperparams.defaults())
+        self.origin = None
+        self.source_combo.set("")
         self.status.set("Every value is back at its default.")
         self._revalidate()
 
@@ -672,8 +769,9 @@ class HyperparamWindow:
                 self.focus_field(first.key)
             return False
         hp = self.draft
+        origin = self.origin
         self.close()
-        self.on_apply(hp)
+        self.on_apply(hp, origin)
         return True
 
     def cancel(self):

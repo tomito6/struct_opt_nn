@@ -1,0 +1,3 @@
+# cmd.exe finds "goto" labels by scanning CRLF lines; an LF-only batch file can
+# miss one and abort. Keep the installer CRLF whatever a clone's autocrlf says.
+*.bat text eol=crlf

@@ -1335,6 +1335,314 @@ def _schedule_from_specs(hp, prefix, entry, take, notes):
 
 
 # --------------------------------------------------------------------------- #
+# the supervisor's hyperparameter sheet
+# --------------------------------------------------------------------------- #
+
+# ``docs/hyperparameters/NN_Training_Hyperparameters_Template_Clean.xlsx`` is
+# the sheet a run is reported on: one hyperparameter per row, named in column
+# A, its value in column B, a note in column C. ``from_sheet`` reads such a
+# sheet back into a hyperparameter set. The names below are the template's
+# row names after ``_sheet_name`` (case, dashes and spacing ignored); a row
+# the template does not have is reported, not guessed at.
+SHEET_HEADER = ("hyperparameter", "value")
+
+# rows that are one field of the set, verbatim
+_SHEET_FIELDS = {
+    "geometries per batch": "scenes_per_batch",
+    "latent dimension": "latent_dim",
+    "initial latent regularization": "code_reg_lambda",
+    "hidden layers": "n_layers",
+    "neurons per hidden layer": "width",
+    "dropout": "dropout_prob",
+    "epochs": "num_epochs",
+    "learning rate network weights": "lr_dec_initial",
+    "learning rate latent vectors": "lr_code_initial",
+    "clamp value": "clamping_distance",
+}
+# rows the app cannot change: (what must be in the cell, why)
+_SHEET_FIXED = {
+    "activation function": ("ReLU", "the decoder's activation is ReLU"),
+    "optimizer": ("Adam", "the trainer's optimizer is Adam"),
+    "latent initialization mean": (0, "the trainer centres the initial codes at 0"),
+}
+# rows that describe the dataset or the trainer rather than a setting
+_SHEET_INFO = (
+    "number of training geometries",
+    "samples per geometry",
+    "sampling strategy",
+)
+# rows read together with another row
+_SHEET_DERIVED = (
+    "points per training step",
+    "latent initialization variance",
+    "learning rate decay factor",
+    "learning rate decay interval",
+    "loss function",
+)
+SHEET_ROWS = tuple(_SHEET_FIELDS) + tuple(_SHEET_FIXED) + _SHEET_INFO + _SHEET_DERIVED
+
+
+def _sheet_name(text) -> str:
+    """A row name of the sheet, normalised: case, dashes and spacing ignored."""
+    text = str(text if text is not None else "").strip().lower()
+    text = re.sub(r"[‐-―\-_/:]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _sheet_text(value) -> str:
+    """What a cell value would look like typed into the field's entry."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, float):
+        return repr(value)
+    return str(value).strip()
+
+
+def _sheet_loss(value) -> str | None:
+    """``"Clamped L1"`` -> ``"clampedL1"``: the sheet writes losses in prose."""
+    wanted = re.sub(r"[\s\-_]+", "", str(value).lower())
+    wanted = re.sub(r"loss$", "", wanted)
+    for choice in LOSS_FUNCTIONS:
+        if choice.lower() == wanted:
+            return choice
+    return None
+
+
+def from_sheet(rows, n_shapes: int | None = None) -> tuple[dict, list[str]]:
+    """Read a hyperparameter set out of the supervisor's sheet.
+
+    The counterpart of :func:`from_specs` for ``xlsx.read_rows`` output: the
+    template's rows are mapped onto the fields, the rest of the set keeps its
+    defaults, and every value that could not be taken as written is said in
+    the notes. Three rows need arithmetic, stated in the notes as well:
+
+    * *Points per training step* is the whole batch, so samples per shape is
+      that number divided by *Geometries per batch*;
+    * *Latent initialization variance* is per component, and the trainer
+      draws codes from N(0, σ²/d), so σ = sqrt(variance · d);
+    * the decay *factor* and *interval* apply to both learning-rate
+      schedules, which are set to Step.
+
+    Rows about the dataset or the trainer - number of geometries, samples per
+    geometry, the sampling strategy, activation, optimizer - cannot be set
+    here; the notes say what the app does with them instead.
+
+    Parameters
+    ----------
+    rows : list of list
+        Cell values, as ``xlsx.read_rows`` returns them: the row name in the
+        first column, its value in the second. A header row saying
+        ``Hyperparameter | Value`` may precede them.
+    n_shapes : int, optional
+        Shapes in the selected dataset, to check *Number of training
+        geometries* against.
+
+    Returns
+    -------
+    (dict, list of str)
+        The hyperparameter set and one note per value that was converted,
+        dropped, or left blank in the sheet.
+    """
+    hp = defaults()
+    notes: list[str] = []
+    values: dict[str, tuple[object, int]] = {}
+    unknown: list[str] = []
+
+    start = 0
+    for index, row in enumerate(rows):
+        cells = [_sheet_name(c) for c in row[:2]]
+        if tuple(cells) == SHEET_HEADER:
+            start = index + 1
+            break
+    for index, row in enumerate(rows[start:], start=start + 1):
+        name = _sheet_name(row[0] if row else None)
+        value = row[1] if len(row) > 1 else None
+        if isinstance(value, str) and not value.strip():
+            value = None
+        if not name:
+            continue
+        if name in SHEET_ROWS:
+            values.setdefault(name, (value, str(row[0]).strip()))
+        elif value is not None:
+            unknown.append(f"'{str(row[0]).strip()}' (row {index})")
+
+    def take(key, value, row_name):
+        field = FIELD_BY_KEY[key]
+        try:
+            hp[key] = parse(field, _sheet_text(value))
+        except ValueError as exc:
+            notes.append(
+                f"{field.full_label}: {exc} (the sheet says {value!r} for "
+                f"'{row_name}'); kept the default."
+            )
+
+    blank = []
+
+    def cell(name):
+        value, shown = values.get(name, (None, name))
+        if value is None and name in values:
+            blank.append(shown)
+        return value
+
+    for name, key in _SHEET_FIELDS.items():
+        value = cell(name)
+        if value is not None:
+            take(key, value, name)
+
+    for name, (expected, why) in _SHEET_FIXED.items():
+        value = cell(name)
+        if value is None:
+            continue
+        same = _sheet_text(value).lower() == _sheet_text(expected).lower() or (
+            isinstance(value, (int, float))
+            and isinstance(expected, (int, float))
+            and float(value) == float(expected)
+        )
+        if not same:
+            notes.append(f"'{name}' {value!r} cannot be set: {why}.")
+
+    count = cell("number of training geometries")
+    if count is not None:
+        if n_shapes is not None and _sheet_text(count) != str(n_shapes):
+            notes.append(
+                f"The sheet is for {count} training geometries; the selected "
+                f"dataset has {n_shapes}."
+            )
+        elif n_shapes is None:
+            notes.append(
+                f"'Number of training geometries' ({count}) is decided by the "
+                "dataset, not set here."
+            )
+    if cell("samples per geometry") is not None:
+        notes.append(
+            "'Samples per geometry' is a property of the dataset files, not a "
+            "setting."
+        )
+    strategy = cell("sampling strategy")
+    if strategy is not None:
+        notes.append(
+            "'Sampling strategy' is fixed by the trainer: a random window per "
+            "step, half inside and half outside."
+        )
+
+    points = cell("points per training step")
+    if points is not None:
+        batch = hp["scenes_per_batch"]
+        try:
+            per_shape = _parse_int(_sheet_text(points))
+        except ValueError:
+            per_shape = None
+        if per_shape is None:
+            notes.append(
+                f"'Points per training step' {points!r} is not a whole number; "
+                "kept the default samples per shape."
+            )
+        else:
+            total = per_shape
+            per_shape //= batch
+            per_shape -= per_shape % 2  # the loader draws half inside, half outside
+            dropped = total - per_shape * batch
+            take("samples_per_scene", per_shape, "points per training step")
+            note = (
+                f"Samples per shape {hp['samples_per_scene']} = {points} points "
+                f"per step / {batch} geometries per batch."
+            )
+            if dropped:
+                note += (
+                    f" ({dropped} points dropped: the count per shape must be "
+                    "even and divide the batch.)"
+                )
+            notes.append(note)
+
+    variance = cell("latent initialization variance")
+    if variance is not None:
+        try:
+            var = _parse_float(_sheet_text(variance))
+        except ValueError:
+            var = None
+        d = hp["latent_dim"]
+        if var is None or var <= 0 or not math.isfinite(var):
+            notes.append(
+                f"'Latent initialization variance' {variance!r} is not a positive "
+                "number; kept the default spread."
+            )
+        else:
+            sigma = math.sqrt(var * d)
+            take("code_init_std", sigma, "latent initialization variance")
+            notes.append(
+                f"Initial spread σ = sqrt({var:g} · d={d}) = {sigma:g}: the "
+                "trainer draws codes from N(0, σ²/d)."
+            )
+
+    factor = cell("learning rate decay factor")
+    interval = cell("learning rate decay interval")
+    if factor is not None or interval is not None:
+        hp["lr_dec_type"] = hp["lr_code_type"] = "Step"
+        for prefix in ("lr_dec", "lr_code"):
+            if factor is not None:
+                take(f"{prefix}_factor", factor, "learning rate decay factor")
+            if interval is not None:
+                take(f"{prefix}_interval", interval, "learning rate decay interval")
+
+    loss = cell("loss function")
+    if loss is not None:
+        choice = _sheet_loss(loss)
+        if choice is None:
+            notes.append(
+                f"'Loss function' {loss!r} is not one of {', '.join(LOSS_FUNCTIONS)}; "
+                "kept the default."
+            )
+        else:
+            hp["loss_function"] = choice
+
+    if len(blank) > 5:
+        notes.append(
+            f"{len(blank)} of the sheet's rows are blank; those values keep the "
+            "defaults."
+        )
+    elif blank:
+        notes.append(
+            "Blank in the sheet, kept the defaults: "
+            + ", ".join(f"'{name}'" for name in blank)
+            + "."
+        )
+    if unknown:
+        notes.append("Not a row of the template, ignored: " + ", ".join(unknown) + ".")
+    return hp, notes
+
+
+def origin_summary(origin, hp: dict) -> str:
+    """Where a set came from, for the Train card and the window's status line.
+
+    ``origin`` is what "Start from" or "Import sheet" recorded when the
+    loaded values were applied: ``{"label", "hp", "when"}`` - the source, the
+    values exactly as loaded, and the clock time. Comparing ``hp`` with those
+    values says what was edited by hand afterwards, so a set that started as
+    a run's settings is never mistaken for that run's settings. Empty when
+    the set was never loaded from anywhere.
+    """
+    if not origin:
+        return ""
+    loaded = origin.get("hp") or {}
+    edited = [
+        f
+        for f in FIELDS
+        if in_use(f, hp) and hp.get(f.key) != loaded.get(f.key, f.default)
+    ]
+    text = f"From {origin['label']}"
+    if origin.get("when"):
+        text += f" (loaded {origin['when']})"
+    if edited:
+        names = ", ".join(f.name for f in edited[:3])
+        if len(edited) > 3:
+            names += f" +{len(edited) - 3}"
+        text += f"; edited since: {names}"
+    return text + "."
+
+
+# --------------------------------------------------------------------------- #
 # summaries
 # --------------------------------------------------------------------------- #
 

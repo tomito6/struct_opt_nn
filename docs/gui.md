@@ -7,6 +7,9 @@ uv run python -m structsept.app.main        # explorer: Explore, Explore 2-D, Tr
 uv run python -m structsept.app.sdf_maker   # dataset builder, run once in a while
 ```
 
+Or from the desktop: double-click `install_shortcuts.bat` once and both windows
+appear as shortcuts in `Desktop\NN` (see *Running it from the desktop* below).
+
 The explorer assumes valid SDF datasets already exist on disk. Building them is
 a different job with a different rhythm, so it lives in its own window and kept
 its old, unstyled layout — only its text is English now. Parametric datasets
@@ -165,6 +168,35 @@ thread is inside the trainer for the whole run and cannot report anything — an
 a table of past runs; double-click opens one in the Explore tab, or in Explore
 2-D for a planar run.
 
+**The runs table is newest first.** The date is the `metadata.json` timestamp
+— written when a run finished, or when a preset was generated. A run without
+one (started by hand, or still training) is dated by its `specs.json` and
+shown with a `~`. Clicking a heading sorts by that column; the same heading
+again flips the direction, and the sorted column carries a `▾`/`▴`. The
+"Start from" list in the hyperparameter window uses the same order.
+
+**Runs can be edited after the fact.** Under the table: *Open*, *Edit...*,
+*Load hyperparameters*, *Delete...* and *Refresh*; the same four actions are
+on the right-click menu, and F2 / Delete act on the selected row. *Edit...*
+opens a small window (`structsept/app/run_editor.py`) with the run's name and
+its notes. The name is the directory under `runs/`, so renaming it renames
+the decoder everywhere, and the model pickers and this table re-read the
+disk at once. The notes are the `Description` the trainer already keeps in
+`specs.json` - it only carries the string along, so a finished run stays
+loadable and a waiting preset still trains the same - and they are the last
+column of the table. *Load hyperparameters* is "Start from" without the
+search: it opens the hyperparameter window with that run's settings loaded.
+*Delete...* asks first, refuses anything without a `specs.json`, and cannot
+be undone. The run being trained right now is locked against all three. The
+table takes the wider half of the tab; the two text columns (run, notes) grow
+with the window, the numbers keep their width.
+
+The same *Edit...* sits on the decoder picker of both Explore tabs, for a
+decoder "trained here" - that is a run directory. It stays grey on a shipped
+decoder: those are the library's files, not runs. The pickers are as wide as
+their longest label (`widgets.combo_width`), so a run name is no longer
+clipped in the drop-down.
+
 **The dataset decides the decoder's input.** Each dataset in the picker says
 `2-D` or `3-D` — from `datagen`'s `dataset.json` when there is one, from the
 width of the stored rows otherwise. A 2-D set trains `f_θ(λ, x, y)`
@@ -210,6 +242,29 @@ summary and `training.write_specs` are all built from it.
   (`ChiAndCross`, `Primitives2D`, …) into the draft. Whatever could not be
   carried over — another architecture, non-uniform layer widths — is said in
   the status line, not dropped silently.
+- **"Import sheet..."** loads the supervisor's Excel template
+  (`docs/hyperparameters/NN_Training_Hyperparameters_Template_Clean.xlsx`:
+  one hyperparameter per row, its value in column B). The template does not
+  speak the trainer's language one to one, so `hyperparams.from_sheet` does
+  the arithmetic and says so in the status line: *Points per training step*
+  is the whole batch (samples per shape = points ÷ *Geometries per batch*,
+  rounded down to an even number), *Latent initialization variance* is per
+  component while the trainer draws codes from N(0, σ²/d) (σ = √(variance·d)),
+  and the decay factor and interval go to both learning-rate schedules as
+  Step. Rows that are not settings — number of geometries, samples per
+  geometry, sampling strategy, activation, optimizer — are checked against
+  what the app does and reported when they disagree; blank rows keep their
+  defaults; a row the template does not have is named and ignored. The file
+  is read with `structsept/app/xlsx.py`, a standard-library reader of the
+  cells of one worksheet, rather than adding `openpyxl` to the environment.
+- **The window remembers where its values came from.** Load or Import, then
+  Apply: the card says "From run: X (loaded 14:02)", and the window, opened
+  again later, has that source selected in "Start from" and says the same in
+  its status line — plus "edited since: epochs, width" for whatever was
+  changed by hand afterwards, on the card or in the window. The comparison
+  is against the values as loaded (`hyperparams.origin_summary`), so a set
+  that *started* as a run's settings is never presented as that run's
+  settings. "Reset to defaults" forgets the source.
 - **The `specs.json` page** renders the file the next run will write, from the
   draft. It answers "what exactly will the trainer see?" without starting a
   run.
@@ -224,7 +279,86 @@ app wrote before it existed. The test suite pins that.
 
 ---
 
+## Running it from the desktop
+
+`install_shortcuts.bat` at the repo root (double-click, or
+`uv run python -m structsept.app.launcher --install`) writes two shortcuts into
+`Desktop\NN`: *Lattice explorer* and *SDF maker*. They are generated per machine
+and never committed: a `.lnk` stores absolute paths, and every clone's `.venv`
+lives somewhere else. Running the installer again is always safe.
+
+Both shortcuts run `structsept/app/launcher.py` under `pythonw.exe`. The
+launcher exists because a shortcut differs from a terminal in three ways:
+
+- **No console.** Under `pythonw`, `sys.stderr` is `None`, and the library's
+  tqdm bars (`deep_sdf/training.py`, `sampling.py`) write to it
+  unconditionally, so training from a shortcut crashed on the first epoch with
+  `'NoneType' object has no attribute 'write'`. The launcher gives the process
+  `outputs/logs/<window>.log` as its stdout and stderr and disables tqdm — the
+  Train tab reads progress from `Logs.pth` anyway. Whatever a terminal would
+  have shown (tracebacks, Tk callback errors, a segfault report) is in that
+  file. A terminal run is left untouched.
+- **15–30 s of nothing.** torch, DeepSDFStruct and matplotlib take that long to
+  import here, and a shortcut that shows nothing gets double-clicked again. The
+  splash appears within a second and counts the seconds; the import runs on a
+  worker thread, and `build_app(root=...)` then builds the app into the root
+  the splash already owns. A second `tk.Tk()` would not do: the SDF maker's
+  master-less `StringVar`s bind to whichever interpreter is the default.
+- **Staying current.** Code changes need nothing — both packages are editable
+  installs, so a shortcut always runs the files in the clone. Dependencies are
+  the one gap, so before importing, the launcher hashes `pyproject.toml`,
+  `uv.lock` and `DeepSDFStruct/pyproject.toml` and runs `uv sync` (with a
+  splash message) when they differ from the last successful sync. It will not
+  update while another structsept window is open: Windows cannot replace a
+  loaded DLL, and a sync that stops halfway is worse than a stale environment.
+  Offline, without `uv` reachable, or with another window open it says so in
+  the log (`[launcher] …`) and starts anyway; a package that is then missing
+  becomes a dialog naming the package and the fix, not a silent exit.
+
+For someone new to the project the whole setup is: install `uv`,
+`git clone --recursive …`, double-click `install_shortcuts.bat`. The batch file
+fetches the submodule if the clone forgot `--recursive`, runs `uv sync` (the
+first time downloads torch and takes minutes) and writes the shortcuts.
+
+---
+
+## Two windows at once
+
+Nothing stops a second explorer next to the first: each window is its own
+process with its own Tk interpreter and state - `busy` is per window, so one
+can explore while the other trains - the shortcut's instance lock has room
+for 16, and the launcher's log is opened in append mode. What the windows
+share is the disk, `runs/` above all, and that is where one can get in the
+other's way:
+
+- **A run finished in one window shows in the other after *Refresh*.** The
+  runs table and the model pickers re-read the disk on the app's own events
+  (its own run ending, a rename, a delete), not on a timer.
+- **The same run name in both is a collision.** Train checks for an existing
+  `specs.json` when it starts, and the automatic name is minute-resolved
+  (`<dataset>_d<d>_<yyyymmdd_hhmm>`), so two windows started on the same
+  dataset within a minute would write into one directory. Type a name.
+- **Renaming or deleting a run the other window is training** is refused by
+  Windows while a file of it is open, and would otherwise break that run at
+  its next checkpoint: `run_editor.training_now` only sees this window's run.
+- **Two trainings share the CPU.** torch uses every core, so the epoch time
+  of both goes up; the 4 h plate scripts were run one after the other for
+  that reason.
+
+---
+
 ## Tests
+
+`tests/test_app_launcher.py` covers the launcher without showing a window: the
+console-less stream redirect (with a real tqdm bar under `None` streams), the
+dependency hash and the sync guards, the splash-to-app handover, the
+missing-package dialog, and — on Windows — that the written `.lnk` files
+resolve to this clone's `pythonw.exe` and icons. Each launch scenario runs in
+a fresh interpreter, one of them under `pythonw.exe` with nothing attached,
+which is the shortcut's situation for real. That is also why they are not
+in-process: several Tk interpreters created and destroyed inside one pytest
+process, with pytest's fd capture swapping the std handles between them,
+failed to read `init.tcl` every third run.
 
 `tests/test_app_explore.py` drives the real widgets off-screen. Each test is a
 defect that shipped once: the context column freezing on a resolution change,
@@ -243,6 +377,13 @@ values typed into the window. The window itself is driven off-screen.
 `datagen` plate set: the dataset is recognised as 2-D, a two-epoch throwaway run
 is trained by the Train tab's own code, lands on Explore 2-D and not on Explore,
 and its sliders are driven off-screen.
+`tests/test_app_runs.py` covers editing runs after the fact: the file
+operations (`check_run_name`, `rename_run`, `write_description`,
+`delete_run`) on temporary directories, and the editor driven off-screen from
+the runs table and from the Explore 2-D picker - a rename that lands in every
+list, a taken name refused, the run being trained locked, a delete that asks
+first, *Load hyperparameters* reaching the window.
+
 `tests/test_datagen.py` covers the generator itself — the field against a
 brute-force distance, the file contract, overwrite safety. Run them with the
 rest:
@@ -272,3 +413,5 @@ uv run pytest tests/ -q
   loading a large folder. Pre-existing, and kept as-is with the rest of it.
 - Explore 2-D shows the field, not a mesh: there is no surface extraction or
   STL export for planar decoders yet.
+- Runs are listed from the app's own events, not from a timer: a run that
+  another window finished, renamed or deleted shows up after *Refresh*.

@@ -29,7 +29,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-from structsept.app import models, runtime, theme, viz, widgets
+from structsept.app import models, run_editor, runtime, theme, viz, widgets
 
 DEBOUNCE_MS = 120
 SETTLE_MS = 400
@@ -55,6 +55,8 @@ def _sub(n):
 def build(st, parent, runs_dir):
     """Populate the Explore tab. ``parent`` is an empty padded frame."""
     st["ex_runs_dir"] = Path(runs_dir)
+    # a run renamed or deleted anywhere in the app is re-read here too
+    st.setdefault("run_listeners", []).append(lambda: refresh_models(st))
     st["ex_n_ctrl"] = [tk.IntVar(value=v) for v in (3, 3, 2)]
     st["ex_tiling"] = [tk.IntVar(value=v) for v in (2, 2, 2)]
     st["ex_component"] = tk.StringVar(value="")
@@ -133,6 +135,16 @@ def _build_header(st, parent, palette):
         style="CardGhost.TButton",
         command=lambda: refresh_models(st),
     ).pack(side="left")
+    # a decoder "trained here" is a run directory: rename it or note what it
+    # is for; the shipped decoders are the library's and stay read-only
+    st["ex_btn_edit"] = ttk.Button(
+        row1,
+        text="Edit...",
+        style="CardGhost.TButton",
+        command=lambda: _edit_model(st),
+    )
+    st["ex_btn_edit"].pack(side="left", padx=(4, 0))
+    st["ex_model_choice"].trace_add("write", lambda *_: _update_edit_button(st))
     st["ex_btn_load"] = ttk.Button(
         row1, text="Load", style="Accent.TButton", command=lambda: _load_model(st)
     )
@@ -441,9 +453,11 @@ def refresh_models(st):
         labels[f"{entry.name} - d={d}, {entry.n_latents} shapes ({tag})"] = entry
     st["ex_models"] = labels
     combo = st["ex_combo_model"]
-    combo.configure(values=list(labels))
+    # as wide as the longest label: a fixed width clipped the run names
+    combo.configure(values=list(labels), width=widgets.combo_width(labels))
     if labels and combo.get() not in labels:
         combo.set(next(iter(labels)))
+    _update_edit_button(st)
 
 
 def select_model(st, name):
@@ -453,6 +467,23 @@ def select_model(st, name):
             st["ex_combo_model"].set(label)
             return True
     return False
+
+
+def _update_edit_button(st):
+    """Edit... is for local runs only; a shipped decoder has no directory here."""
+    entry = st.get("ex_models", {}).get(st["ex_model_choice"].get())
+    editable = entry is not None and entry.source == "run"
+    st["ex_btn_edit"].configure(state="normal" if editable else "disabled")
+
+
+def _edit_model(st):
+    """Rename the picked local run or change its notes (``run_editor``)."""
+    entry = st.get("ex_models", {}).get(st["ex_combo_model"].get())
+    if entry is None or entry.source != "run":
+        return None
+    return run_editor.open_editor(
+        st, st["ex_runs_dir"], entry.name, on_done=lambda name: select_model(st, name)
+    )
 
 
 # --------------------------------------------------------------------------- #
