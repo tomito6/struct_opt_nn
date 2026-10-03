@@ -228,6 +228,11 @@ def list_runs(runs_dir):
     when a preset was generated. A run without metadata (started by hand, or
     still training) is dated by its specs.json instead, and
     ``date_is_estimate`` says so. Both are ISO strings, so they sort as text.
+
+    ``epochs`` is what the run was asked for (``NumEpochs``); ``last_epoch``
+    is what its checkpoint holds (:func:`checkpoint_epoch`). They differ for
+    a run that was stopped or died, which ``trained`` alone cannot tell from
+    a finished one: it only says that a checkpoint exists.
     """
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
@@ -256,6 +261,7 @@ def list_runs(runs_dir):
                 "date": date,
                 "date_is_estimate": estimated,
                 "epochs": meta.get("epochs", specs.get("NumEpochs")),
+                "last_epoch": checkpoint_epoch(path),
                 "final_loss": meta.get("final_loss", _final_loss(path)),
                 "description": specs.get("Description") or "",
                 "trained": (path / ws.model_params_subdir / "latest.pth").is_file(),
@@ -263,6 +269,45 @@ def list_runs(runs_dir):
         )
     rows.sort(key=lambda row: row["date"], reverse=True)
     return rows
+
+
+def checkpoint_epoch(run_dir):
+    """Epoch the run's ``latest`` checkpoint was written at, or ``None``.
+
+    ``NumEpochs`` in specs.json is the epoch count that was asked for. A run
+    that was stopped at a deadline, or whose process died, holds fewer, and
+    its ``latest.pth`` loads all the same - so this is what tells an
+    80-epoch decoder from the 800-epoch one its specs describe.
+
+    Read from ``LatentCodes/latest.pth``: the trainer writes it in the same
+    ``save_latest`` call as ``ModelParameters/latest.pth`` and with the same
+    epoch, and it is a few kilobytes where the decoder is megabytes. That
+    matters because the runs table calls this for every row. ``None`` when
+    the run has no checkpoint yet or the file cannot be read.
+    """
+    import torch
+
+    path = Path(run_dir) / ws.latent_codes_subdir / "latest.pth"
+    if not path.is_file():
+        return None
+    try:
+        return int(torch.load(path, map_location="cpu", weights_only=True)["epoch"])
+    except Exception:
+        # half-written while the trainer saves, or not a checkpoint at all
+        return None
+
+
+def epochs_text(epochs, last_epoch) -> str:
+    """How far a run got, for a table cell or a label: ``800`` or ``80/800``.
+
+    Only a checkpoint that stops short of the planned count is spelled out;
+    a finished run, and one whose checkpoint cannot be read, show the plan.
+    """
+    if epochs is None:
+        return "?" if last_epoch is None else str(last_epoch)
+    if isinstance(last_epoch, int) and isinstance(epochs, int) and last_epoch < epochs:
+        return f"{last_epoch}/{epochs}"
+    return str(epochs)
 
 
 def _file_date(path) -> str:

@@ -239,7 +239,8 @@ def refresh_models(st):
     labels = {}
     for entry in entries:
         d = "?" if entry.latent_dim is None else entry.latent_dim
-        labels[f"{entry.name} - d={d}, {entry.n_latents} shapes (trained here)"] = entry
+        tag = models.entry_tag(entry)
+        labels[f"{entry.name} - d={d}, {entry.n_latents} shapes ({tag})"] = entry
     st["e2_models"] = labels
     combo = st["e2_combo_model"]
     # as wide as the longest label: a fixed width clipped the run names

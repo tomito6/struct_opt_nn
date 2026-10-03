@@ -105,9 +105,10 @@ def plate_with_hole(
     tiling : tuple of int
         Unit cells per axis. Ignored when ``solid``.
     latent : float
-        Constant DeepSDF latent value. Stay inside the trained range
-        [0.15, 0.75]; outside it the decoder produces meaningless geometry.
-        Ignored when ``solid``.
+        Constant DeepSDF latent value. For the analytic round-cross used
+        here it is the strut radius itself, in the cell's [-1, 1] frame;
+        nothing is trained. Stay inside [0.15, 0.75], the bounds the
+        library's optimization test gives it. Ignored when ``solid``.
     solid : bool
         Make the plate a plain solid slab instead of a lattice. The neural
         network is not loaded at all in this case -- a solid plate is an

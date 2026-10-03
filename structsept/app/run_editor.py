@@ -91,8 +91,13 @@ def describe(runs_dir, name) -> str:
             if len(set(dims)) == 1
             else "x".join(str(x) for x in dims)
         )
-    if row.get("epochs") is not None:
-        parts.append(f"{row['epochs']} epochs")
+    epochs, last = row.get("epochs"), row.get("last_epoch")
+    if isinstance(last, int) and isinstance(epochs, int) and last < epochs:
+        # stopped, died, or still training: the checkpoint is not the run
+        # its specs describe
+        parts.append(f"epoch {last} of {epochs}")
+    elif epochs is not None:
+        parts.append(f"{epochs} epochs")
     if isinstance(row.get("final_loss"), (int, float)):
         parts.append(f"final loss {row['final_loss']:.4f}")
     parts.append("checkpoint saved" if row.get("trained") else "no checkpoint yet")

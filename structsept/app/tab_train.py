@@ -226,7 +226,7 @@ RUN_COLUMNS = (
     ("name", "#0", "run", 250),
     ("dataset", "dataset", "dataset", 150),
     ("latent_dim", "d", "d", 28),
-    ("epochs", "epochs", "epochs", 52),
+    ("epochs", "epochs", "epochs", 64),
     ("final_loss", "loss", "final loss", 66),
     ("date", "date", "date", 132),
     ("description", "notes", "notes", 140),
@@ -363,7 +363,8 @@ def _fill_runs(st):
             values=(
                 row.get("dataset") or "-",
                 row.get("latent_dim") if row.get("latent_dim") is not None else "?",
-                row.get("epochs") if row.get("epochs") is not None else "?",
+                # "80/800" for a run that stopped short of its epochs
+                training.epochs_text(row.get("epochs"), row.get("last_epoch")),
                 f"{loss:.4f}" if isinstance(loss, (int, float)) else "-",
                 date,
                 # one line in the table; the editor shows the notes in full

@@ -449,7 +449,7 @@ def refresh_models(st):
     labels = {}
     for entry in entries:
         d = "?" if entry.latent_dim is None else entry.latent_dim
-        tag = "trained here" if entry.source == "run" else "pretrained"
+        tag = models.entry_tag(entry)
         labels[f"{entry.name} - d={d}, {entry.n_latents} shapes ({tag})"] = entry
     st["ex_models"] = labels
     combo = st["ex_combo_model"]

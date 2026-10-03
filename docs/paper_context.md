@@ -68,11 +68,36 @@ Offline (once):
 
 1. **Training data** — geometry scaled into `(−1, 1)`, points sampled on the domain,
    signed distance to the surface computed. 500 000 points per training shape,
-   16 000 drawn per training step, batches of 10 geometries. Sampling is uniform —
-   unlike Park et al., near-surface points are *not* prioritized; the authors found
-   uniform sufficient for unit-cell complexity.
+   16 000 drawn per training step, batches of 10 geometries. The 16 000 is **per
+   shape** (`SamplesPerScene` in the shipped specs), so one optimizer step sees
+   160 000 points. Sampling is uniform — unlike Park et al., near-surface points
+   are *not* prioritized; the authors found uniform sufficient for unit-cell
+   complexity.
 2. **Training** — minimize the difference between network output and sampled
    distances. Latent vectors initialized from `N(0, 0.01)`.
+
+### Where the reference code differs from the printed paper
+
+Checked on 2026-10-02 against `DeepSDFStruct/DeepSDFStruct/deep_sdf/training.py`, the decoder and
+the shipped `round_cross` / `chi_and_cross` specs. The loss (Eq. 7–8, δ = 0.1), Adam
+with 5e-4 / 1e-3 and the step schedule of Eq. 10 (first halving at epoch 500) are
+the same in both. These are not:
+
+| | Paper | Reference code (what every run here inherits) |
+|---|---|---|
+| Regularizer, Eq. 6 | `σ · ‖λ‖²` per shape | `σ · mean(‖λ‖)`, the norm **not** squared |
+| Its weight, Eq. 9 | `σ₀ · min(1, 1/n_epoch)`, decays | `σ₀ · min(1, epoch/100)`, ramps **up**; hardcoded |
+| Latent init | variance 0.01 | `CodeInitStdDev` default 1.0 → variance `1/d`; the shipped codes fill `[−1, 1]` |
+| Code bound | not mentioned | `CodeBound` 1.0 as `Embedding(max_norm)` |
+| Gradient clipping | not mentioned | max-norm 1.0 on the decoder, hardcoded |
+| Architecture | 6 × 128, ReLU, dropout 0.2 | the same, plus a skip connection at layer 2 and weight norm on every layer |
+| Per-step sampling | 16 000 uniform points | half from inside, half from outside, whatever the volume fraction |
+
+The regularizer is about 0.3 % of the loss in this project's runs, so its form and
+ramp direction change nothing measurable. The latent init does matter for the
+**latent range**: runs here use the paper's variance (`σ = 0.1·√d`) and end with
+code norms of 0.16–0.59, not the `[−1, 1]` of the shipped decoders — bounds for the
+optimization have to come from each run's own codes.
 
 Online (every iteration):
 

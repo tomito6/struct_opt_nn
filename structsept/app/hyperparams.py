@@ -32,8 +32,18 @@ Where the defaults come from
 They reproduce, key for key, the ``specs.json`` the app wrote before this
 module existed, which in turn follows the shipped ``RoundCross`` and
 ``ChiAndCross`` decoders (6 x 128, skip at layer 2, weight norm, dropout 0.2,
-clamping 0.1, Adam at 5e-4 / 1e-3 halved every 500 epochs). Only
-``SamplesPerScene`` is smaller (8000 against 16000) - a CPU budget.
+clamping 0.1, Adam at 5e-4 / 1e-3 halved every 500 epochs). The network and
+the loss are theirs unchanged; the budget is not: ``SamplesPerScene`` is 8000
+against 16000 and ``NumEpochs`` 200 against 1000 - a CPU budget, and with it
+the 500-epoch learning-rate step is never reached (:func:`validate` says so).
+The snapshot epochs and ``DataLoaderThreads`` differ too, which changes what
+is kept on disk, not what is trained.
+
+One default follows the shipped decoders and not the paper's text: the
+initial spread of the codes. ``CodeInitStdDev`` 1.0 is the trainer's default
+and gives a per-component variance of 1/d; the paper states a variance of
+0.01, which is ``0.1 * sqrt(d)`` here (what :func:`from_sheet` computes from
+the sheet's variance row).
 """
 
 from __future__ import annotations
@@ -330,8 +340,9 @@ FIELDS: tuple[Field, ...] = (
         "arch",
         "bool",
         False,
-        "Concatenate the query point x to the input of every hidden layer. "
-        "Each layer outputs 3 fewer neurons to keep the width.",
+        "Concatenate the query point x to the input of every layer after the "
+        "first, the output layer included. Each hidden layer outputs 3 fewer "
+        "neurons to keep the width (2 on a 2-D dataset).",
         "NetworkSpecs.xyz_in_all",
         short="x in all layers",
     ),
@@ -417,7 +428,9 @@ FIELDS: tuple[Field, ...] = (
         "float",
         1.0,
         "Codes start as N(0, σ²/d). Larger values spread the shapes apart in "
-        "latent space from the first epoch.",
+        "latent space from the first epoch; codes drawn beyond the maximum "
+        "norm are pulled back onto it. 1 is the trainer's default; the "
+        "paper's variance of 0.01 per component is σ = 0.1·√d.",
         "CodeInitStdDev",
         low=0.0,
         high=10.0,
@@ -1490,6 +1503,18 @@ def from_sheet(rows, n_shapes: int | None = None) -> tuple[dict, list[str]]:
         value = cell(name)
         if value is not None:
             take(key, value, name)
+
+    # The template has no row for the skip connection, so it keeps its
+    # default layer however deep the sheet makes the decoder. A run trained
+    # by a script with the skip elsewhere (the 8 x 256 ones use layer 4) is
+    # then not what its sheet imports as - worth one line, not a guess.
+    if hp["n_layers"] != FIELD_BY_KEY["n_layers"].default:
+        notes.append(
+            f"The sheet has no row for the skip connection: it stays at layer "
+            f"{format_value(FIELD_BY_KEY['latent_in'], hp['latent_in']) or 'none'} "
+            f"of {hp['n_layers']}, the default. Set it in the window if the run "
+            "this sheet documents used another."
+        )
 
     for name, (expected, why) in _SHEET_FIXED.items():
         value = cell(name)

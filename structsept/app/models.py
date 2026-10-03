@@ -33,10 +33,12 @@ from DeepSDFStruct.pretrained_models import (
 
 # geom_dimension: how many coordinates the decoder takes next to the latent
 # code - 3 for the unit-cell decoders of the paper, 2 for a planar shape.
+# epoch / planned_epochs: what the checkpoint holds against what specs.json
+# asked for; they differ for a run that was stopped or died (see entry_tag).
 ModelEntry = namedtuple(
     "ModelEntry",
-    "name source ref latent_dim n_latents geom_dimension",
-    defaults=(3,),
+    "name source ref latent_dim n_latents geom_dimension epoch planned_epochs",
+    defaults=(3, None, None),
 )
 
 _CHECKPOINT = "latest"
@@ -68,18 +70,53 @@ def _read_geom_dimension(run_dir: Path) -> int:
         return 3
 
 
-def _count_latents(run_dir: Path) -> int:
-    """Number of trained shapes, from the (small) latent code checkpoint."""
+def _latent_checkpoint(run_dir: Path) -> tuple[int, int | None]:
+    """Number of trained shapes and the epoch they were saved at.
+
+    Both come from the (small) latent code checkpoint, which the trainer
+    writes together with the decoder weights. ``(0, None)`` when it is
+    missing or unreadable.
+    """
     path = run_dir / "LatentCodes" / f"{_CHECKPOINT}.pth"
     if not path.is_file():
-        return 0
+        return 0, None
     try:
-        codes = torch.load(path, map_location="cpu", weights_only=True)["latent_codes"]
+        data = torch.load(path, map_location="cpu", weights_only=True)
+        codes = data["latent_codes"]
     except Exception:
-        return 0
+        return 0, None
+    try:
+        epoch = int(data["epoch"])
+    except (KeyError, TypeError, ValueError):
+        epoch = None
     if isinstance(codes, torch.Tensor):
-        return int(codes.shape[0])
-    return int(codes["weight"].shape[0])
+        return int(codes.shape[0]), epoch
+    return int(codes["weight"].shape[0]), epoch
+
+
+def _read_planned_epochs(run_dir: Path) -> int | None:
+    """``NumEpochs`` of specs.json: the epoch count the run was asked for."""
+    try:
+        return int(_read_json(run_dir / "specs.json")["NumEpochs"])
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def entry_tag(entry: ModelEntry) -> str:
+    """What a model picker says about an entry after its name and size.
+
+    ``pretrained`` for a shipped decoder, ``trained here`` for a local run -
+    and for a run whose checkpoint stops short of the epochs its specs ask
+    for, how far it got. Such a run (stopped at a deadline, a process that
+    died, or one still training) loads like any other, so the picker is the
+    only place that can say it is not the finished network.
+    """
+    if entry.source != "run":
+        return "pretrained"
+    epoch, planned = entry.epoch, entry.planned_epochs
+    if epoch is not None and planned is not None and epoch < planned:
+        return f"trained here, epoch {epoch} of {planned}"
+    return "trained here"
 
 
 def _is_run_dir(path: Path) -> bool:
@@ -101,14 +138,17 @@ def list_models(runs_dir, geom_dimension=None) -> list[ModelEntry]:
     entries = []
     for member in PretrainedModels:
         run_dir = Path(PRETRAINED_MODELS_DIR) / member.value
+        n_latents, epoch = _latent_checkpoint(run_dir)
         entries.append(
             ModelEntry(
                 name=member.name,
                 source="pretrained",
                 ref=member,
                 latent_dim=_read_code_length(run_dir),
-                n_latents=_count_latents(run_dir),
+                n_latents=n_latents,
                 geom_dimension=_read_geom_dimension(run_dir),
+                epoch=epoch,
+                planned_epochs=_read_planned_epochs(run_dir),
             )
         )
 
@@ -117,14 +157,17 @@ def list_models(runs_dir, geom_dimension=None) -> list[ModelEntry]:
         for run_dir in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
             if not _is_run_dir(run_dir):
                 continue
+            n_latents, epoch = _latent_checkpoint(run_dir)
             entries.append(
                 ModelEntry(
                     name=run_dir.name,
                     source="run",
                     ref=str(run_dir),
                     latent_dim=_read_code_length(run_dir),
-                    n_latents=_count_latents(run_dir),
+                    n_latents=n_latents,
                     geom_dimension=_read_geom_dimension(run_dir),
+                    epoch=epoch,
+                    planned_epochs=_read_planned_epochs(run_dir),
                 )
             )
     if geom_dimension is not None:
@@ -363,28 +406,37 @@ def largest_gap(values) -> tuple[float, float, float]:
 
 
 def volume_fraction(sdf, bounds=None, res=20) -> float:
-    """Fraction of the domain with ``f_theta < 0``, on a regular grid.
+    """Fraction of the domain with ``f_theta < 0``, one sample per grid cell.
 
-    A coarse Monte-Carlo-free estimate of ``V(lambda_hat)`` - the quantity the
-    paper constrains. ``res=20`` is a deliberate compromise: 8000 points cost
-    about 100 ms on CPU - fine once a drag has settled, too slow during one.
+    A coarse estimate of ``V(lambda_hat)`` - the quantity the paper
+    constrains. ``res=20`` is a deliberate compromise: 8000 points cost about
+    100 ms on CPU - fine once a drag has settled, too slow during one.
 
-    The samples are **cell centres**, not grid nodes. A node grid puts
-    ``1 - ((res-2)/res)**3`` of its points - 27% at res=20 - exactly on the
-    domain faces, and ``CappedBorderSDF`` forces ``phi >= 0`` there, so a node
-    grid reports every lattice as roughly a third emptier than it is. Cell
-    centres are also the correct midpoint rule for a volume integral.
+    The samples lie **inside the cells**, never on grid nodes. A node grid
+    puts ``1 - ((res-2)/res)**3`` of its points - 27% at res=20 - exactly on
+    the domain faces, and ``CappedBorderSDF`` forces ``phi >= 0`` there, so a
+    node grid reports every lattice as roughly a third emptier than it is.
+
+    Each sample sits at a random place in its cell, not at the centre
+    (stratified sampling, drawn from a fixed seed so the same design always
+    reads the same). Cell centres form a lattice of their own, and a lattice
+    of samples over a lattice of unit cells aliases: with 32 samples per axis
+    an 8 x 8 x 8 tiling gets four per cell, all at the same places in every
+    cell, and a round-cross of radius 0.3 - true fraction 0.17 - read 0.00;
+    tilings 1 to 7 alternated between 0.18 and 0.16. Jittered, the same count
+    gives 0.173 to 0.176 for every tiling from 1 to 8.
     """
     bounds = _as_bounds(bounds, sdf)
     device = sdf.get_device() if hasattr(sdf, "get_device") else "cpu"
     dtype = sdf.get_dtype() if hasattr(sdf, "get_dtype") else torch.float32
     res = max(int(res), 1)
-    axes = []
-    for d in range(3):
-        lo, hi = bounds[0, d], bounds[1, d]
-        step = (hi - lo) / res
-        axes.append(lo + step * (np.arange(res) + 0.5))
-    grid = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    index = np.stack(
+        np.meshgrid(*([np.arange(res)] * 3), indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    offset = np.random.default_rng(0).random(index.shape)
+    lo = np.asarray(bounds[0], dtype=np.float64)
+    step = (np.asarray(bounds[1], dtype=np.float64) - lo) / res
+    grid = lo + step * (index + offset)
     pts = torch.as_tensor(grid, dtype=dtype, device=device)
     with torch.no_grad():
         values = sdf(pts)

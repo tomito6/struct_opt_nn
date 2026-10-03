@@ -74,8 +74,13 @@ from structsept.plate_with_hole import ScaledSpaceSDF
 
 logger = logging.getLogger(DeepSDFStruct.__name__)
 
-#: Latent values the decoders were trained on. Outside this range the network
-#: extrapolates and the geometry stops meaning anything.
+#: Latent bounds of the library's optimization test, which runs on
+#: ``AnalyticRoundCross``: there the latent is the strut radius, and this is
+#: the range that test keeps it in. For the *trained* ``RoundCross`` it is
+#: only a rule of thumb, not its trained range: that decoder's 20 codes span
+#: [-1, 1] with both signs, the cell getting thicker with ``|latent|`` on
+#: either side of a minimum near +0.05. The warning in ``build_microtile``
+#: therefore also fires for valid codes such as 0.9.
 LATENT_RANGE = (0.15, 0.75)
 
 

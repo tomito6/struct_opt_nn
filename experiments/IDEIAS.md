@@ -977,8 +977,147 @@ ou continuar da época 80 — o `train_deep_sdf` da biblioteca aceita
 `continue_from="latest"`, mas o `structsept.app.training.train` ainda não
 expõe isso.
 
+## Auditoria da rede contra o paper e o DeepSDFStruct (02/10)
+
+Pedido: "dá uma olhada geral no código e vê se tá tudo certo com a NN", com o
+paper e o repo como referência. Seis frentes — dados de treino, arquitetura,
+trainer, hiperparâmetros, os runs treinados, uso do decoder — e cada achado
+passou por um segundo passe independente que tentou derrubá-lo. **Nada foi
+treinado**: só leitura de código e checkpoints e forward pass.
+
+**O que está certo** (conferido, não suposto):
+
+- **Dados:** o SDF das duas famílias é a distância exata, sinal certo
+  (negativo no material), nas 672 formas em disco; o `.npz` e o split são o
+  que o loader da biblioteca espera; índice do código = linha do `params.csv`.
+- **Arquitetura:** o default do app é, chave por chave, o `NetworkSpecs` do
+  `RoundCross` do autor (6 × 128, ReLU, dropout 0,2) e monta certo em 2-D;
+  nada fixo em 3 coordenadas.
+- **Treino:** a loss é a Eq. 7–8 do paper (L1 com clamp 0,1), Adam com
+  5e-4 / 1e-3, o decaimento é a Eq. 10. Mesma seed = mesma rede, **bit a
+  bit** (`ep800` e `0124` têm as 22 440 losses de batch idênticas).
+- **Uso:** todo caminho de carga chama `eval()`; a entrada é [λ, x] igual ao
+  treino; `T(x)` da biblioteca é a Eq. 18 exata; o gradiente chega nos pontos
+  de controle (36/36 entradas não nulas).
+
+**O achado que importa: o decoder d = 3 do furo livre desenha um segundo
+furo.** `plate_hole_2d_xyr_d3_20260930_0124` (o run de 800 épocas, loss
+0,0058): em **27 das 134 formas de treino**, decodificando com o próprio
+código treinado, sai a placa com o furo certo **e mais um furo fantasma** do
+mesmo tamanho, no meio do material. Figura:
+`outputs/reconstruction/plate_hole_2d_xyr_d3_20260930_0124.png`.
+
+- Não aparece em nenhum número de fim de run: loss plana, erro na banda
+  0,0057, e a Eq. 38 do paper dá **0,0136 na média** (ao lado dos 0,0128 do
+  paper) — mas **0,0032 na mediana**. A média é carregada pelas formas com
+  fantasma (0,049 nelas, 0,0046 nas outras).
+- É **uma** rede, não três: o run de 4 h (300 épocas), o `ep800` (680) e o
+  `0124` (800) são a mesma trajetória, mesma seed. Fantasmas ao longo dela:
+  0 na época 1, 1 na 50, 35 na 100, 20 na 150, 27 na 200, 24 na 400 e na
+  600, 26 na 800. Apareceu cedo e as 500 épocas a mais não tiraram.
+- É de um lado só: 21 das 32 formas com y_c < 0,30 têm fantasma, nenhuma com
+  y_c > 0,55. É o "**`y_c` é o problema**" da entrada de 28/09 visto pelo
+  outro lado — as cinco piores do ajuste afim são todas formas com fantasma.
+  O código não separa "furo embaixo" de "furo no meio", e o decoder desenha
+  os dois.
+- Entre códigos treinados também: 3–7 de 30 interpolações saem com dois
+  furos.
+- **Causa: não sei** (precisaria treinar). Dois fatos: nunca foi tentada
+  outra seed; e o n166 na época 80 tem 0 fantasmas onde a trajetória de 134
+  já tinha 35 na época 100.
+- `experiments/check_reconstruction.py` (novo, só forward pass) refaz isso
+  pra qualquer run 2-D: Eq. 38, erro na banda, sinal errado, furos fantasma
+  e furos faltando, csv + figura das 8 piores em `outputs/reconstruction/`.
+
+| run | época | Eq. 38 média (mediana) | sinal errado | topologia |
+|---|---|---|---|---|
+| `plate_tri_2d_hw_d2_4x64` | 1500/1500 | 0,0011 (0,0011) | 0,53 % | ok |
+| `plate_tri_2d_h_d1_4x64` | 1500/1500 | 0,0015 (0,0014) | 0,76 % | ok |
+| `plate2d_r_only_d2_8x256_4h` | 600/600 | 0,0055 (0,0053) | 0,32 % | ok |
+| `plate2d_r_only_d1_8x256_4h` | 600/600 | 0,0093 (0,0090) | 1,91 % | ok |
+| `plate_hole_2d_n134_d2_20260928_1338` | 600/600 | 0,0111 (0,0051) | 1,89 % | um furo, mas inchado |
+| `plate_hole_2d_xyr_n166_d3_ep800` | **80**/800 | 0,0078 (0,0075) | 0,90 % | 1 furo faltando |
+| `plate2d_xyr_d3_8x256_4h` | 300/300 | 0,0146 (0,0032) | 0,96 % | **fantasma em 25** |
+| `plate_hole_2d_xyr_d3_ep800` | **680**/800 | 0,0136 (0,0032) | 0,77 % | **fantasma em 26** |
+| `plate_hole_2d_xyr_d3_20260930_0124` | 800/800 | 0,0136 (0,0032) | 0,76 % | **fantasma em 27** |
+| `Test2` / `First_test` | 500 / 250 | 0,034 / 0,042 | 5–6 % | fantasmas (runs de fumaça) |
+
+Os dois runs de triângulo e os dois `r_only` reproduzem as formas, bem
+abaixo do erro do paper. O d = 2 nas três-parâmetros acerta a topologia mas
+erra o raio em +20 % na média (o furo `r = 0,45` sai com 0,353).
+
+**Receita — o intervalo 75 é resto da versão de 300 épocas.** A planilha
+`..._plate2d_xyr_d3_8x256_4h.xlsx` diz hoje **600 épocas / intervalo 75**;
+as outras duas dizem 600 / 150. O 75 entrou em 28/09 junto com as 300
+épocas (a mesma proporção 600/150); as épocas voltaram pra 600 em 29/09 e o
+intervalo ficou. Os runs de 800 herdaram: 10 metades, lr 5e-4 → 4,9e-7. A
+partir da época ~450 o lr é < 1e-5: as últimas 350 épocas (3,5 h das 7,8 h)
+baixaram a loss 3 %. Não medi se intervalo maior daria loss menor — só que
+esse trecho não treina. O teste `test_the_xyr_d3_sheet_...` ainda espera 300
+e **falha** (já falhava antes de hoje). Decisão do Tomás: 150 (a planilha
+do supervisor), 200 (épocas/4 pra 800) ou manter.
+
+**n166 não dá pra continuar.** O `continue_from` da biblioteca carrega os
+códigos latentes e joga fora (`training.py:517`, `_ = ws.load_latent_vectors`):
+continuaria com decoder da época 80 e códigos sorteados de novo. Corrige a
+opção "continuar da época 80" da entrada de 01/10 — relançar é `--force`, do
+zero, **~14 h** (62 s/época medidos no run que morreu, não os 43 previstos).
+
+**Correção de uma conclusão antiga (28/09): "`r` não está no código".** O
+R² afim de 0,009 se reproduz, mas mede "não é legível por um mapa linear",
+não "ausente": regressão 3-vizinhos no espaço dos códigos recupera r com
+R² 0,69, e o raio decodificado acompanha o verdadeiro (Spearman 0,86). O d = 2
+guarda o raio numa superfície curva, e mal (+20 %); "d = 2 não basta" continua
+valendo. E os números do run de 25 placas (−0,26 / 0,90 / 0,32) eram R² de
+3-vizinhos, não afim — a frase comparava duas estatísticas diferentes.
+
+**Paper × código de referência** (tabela em `docs/paper_context.md`): o
+regularizador do código é a norma não elevada ao quadrado e o peso **sobe**
+`min(1, época/100)`, enquanto a Eq. 9 impressa é `min(1, 1/n_época)` — conferi
+na página renderizada. Pesa 0,3 % da loss, não muda nada. Fora do paper mas
+no código: clip de gradiente em 1,0 (ativo nos checkpoints 375 a 1125 do
+`plate_tri_2d_h_d1`, inativo nos 8 × 256), `CodeBound`, skip na camada 2,
+weight norm, amostragem
+metade dentro / metade fora. E os "16 000 pontos por passo" do paper são
+**por forma** (160 000 por passo); a planilha divide pelo batch.
+
+**Menores, pra saber:**
+
+- **Dropout:** a loss do log é com dropout ligado; o decoder é usado sem. Nos
+  8 × 256 isso desloca a borda externa da placa pra fora em eval — 0,013 no
+  `r_only_d1` (do tamanho do erro do paper), 0,002 no d = 3. Os 4 × 64 sem
+  dropout não têm isso.
+- **Sliders do Explore 2-D:** a caixa min/max dos códigos tem muito espaço
+  sem forma válida (37 de 100 pontos sorteados no d = 3), e o aviso de
+  "código mais próximo" só dispara acima de 0,15 — 3 a 7 vezes o espaçamento
+  dos códigos desses runs.
+- **Malha:** a 10–14 cubos por célula a malha tem 6–12 % menos material que
+  o SDF (o paper usa 20). `fem.tetrahedral_mesh` não é diferenciável (agora
+  dito no docstring); o `create_3D_mesh(mesh_type="volume")` do teste de
+  referência é, mas perde 17–32 % do volume.
+- `plate_hole_2d_n134` e `plate_hole_2d_xyr` são o mesmo dataset, byte a byte.
+
+**Corrigido hoje:**
+
+- Tabela de runs, editor e os dois seletores do Explore mostram a época que o
+  checkpoint tem (`80/800`, "epoch 80 of 800") — antes o n166 aparecia como
+  800 épocas, treinado.
+- *Volume fraction* do Explore: a grade de 32³ entrava em fase com o tiling
+  (lia 0,00 num 8 × 8 × 8 com fração real 0,17; 0,16 / 0,18 alternando nos
+  outros). Amostra sorteada dentro de cada célula, seed fixa: 0,173–0,176 em
+  todos os tilings.
+- Textos: docstring e ajudas do `hyperparams.py`, nota do import da planilha
+  (a camada do skip não está na planilha e fica em 2; os runs 8 × 256 usaram
+  4), comentário do R² em `unattended.py`, `LATENT_RANGE`, docstring do
+  n166.
+- 203 testes sem treino passam; o único que falha é o da planilha acima.
+
 ## Perguntas em aberto
 
+- **(02/10)** O fantasma do d = 3 some com outra seed, com o intervalo de
+  decaimento certo, ou com as 166 formas? Qual dos três rodar primeiro?
+- **(02/10)** A linha "Points per training step" da planilha é por passo
+  (como o app lê) ou por forma (como o paper e os specs do autor)?
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram
   chute meu.
 - O furo é requisito do problema ou só exercício?

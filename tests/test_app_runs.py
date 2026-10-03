@@ -137,6 +137,43 @@ def test_describe_states_what_the_run_is(tmp_path):
     assert "no checkpoint yet" in run_editor.describe(tmp_path, "waiting")
 
 
+def test_a_run_that_stopped_short_says_how_far_it_got(tmp_path):
+    """A checkpoint at epoch 3 of 10 loads like a finished one, so the table,
+    the editor and the model pickers have to say it is not: the n166 run sat
+    in all three as '800 epochs, checkpoint saved' while holding epoch 80."""
+    import torch
+
+    from structsept.app import models, run_editor, training
+
+    def checkpoint(run, epoch):
+        (run / "LatentCodes").mkdir()
+        torch.save(
+            {"epoch": epoch, "latent_codes": {"weight": torch.zeros(4, 3)}},
+            run / "LatentCodes" / "latest.pth",
+        )
+
+    checkpoint(_make_run(tmp_path, "short", d=3, epochs=10, trained=True), 3)
+    checkpoint(_make_run(tmp_path, "full", d=3, epochs=10, trained=True), 10)
+    _make_run(tmp_path, "unreadable", d=3, epochs=10, trained=True)
+    rows = {r["name"]: r for r in training.list_runs(tmp_path)}
+    assert rows["short"]["epochs"] == 10 and rows["short"]["last_epoch"] == 3
+    assert rows["full"]["last_epoch"] == 10
+    assert rows["unreadable"]["last_epoch"] is None
+
+    assert training.epochs_text(10, 3) == "3/10"
+    assert training.epochs_text(10, 10) == training.epochs_text(10, None) == "10"
+    assert training.epochs_text(None, None) == "?"
+
+    assert "epoch 3 of 10" in run_editor.describe(tmp_path, "short")
+    assert "10 epochs" in run_editor.describe(tmp_path, "full")
+    assert "10 epochs" in run_editor.describe(tmp_path, "unreadable")
+
+    tags = {e.name: models.entry_tag(e) for e in models.list_models(tmp_path)}
+    assert tags["short"] == "trained here, epoch 3 of 10"
+    assert tags["full"] == tags["unreadable"] == "trained here"
+    assert tags["ChiAndCross"] == "pretrained"
+
+
 def test_combo_width_fits_the_longest_label():
     from structsept.app import widgets
 

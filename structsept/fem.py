@@ -115,6 +115,16 @@ def tetrahedral_mesh(plate, deformation, resolution=10, device="cpu"):
     matches the surface volume to all printed digits. A stiffness matrix is
     only as good as the mesh under it, so the accurate path wins here.
 
+    **Not differentiable.** The surface is extracted with
+    ``differentiate=False`` and tetgen works on numpy arrays, so the vertices
+    returned here carry no gradient: ``K`` cannot be differentiated with
+    respect to the latent through this function. That is enough for a
+    stiffness matrix; an optimization loop needs the graph back. tetgen keeps
+    the surface nodes as the first nodes of its mesh, unchanged, so the way
+    there is to extract the surface with gradients and put its vertices back
+    in place of those rows - or to use the paper's boundary-integral
+    sensitivities (Eq. 36-37), which need only the surface vertices.
+
     Two clean-up passes follow, the same the optimization test does. Both are
     no-ops on tetgen output but cost nothing and guard against surprises:
     torch-fem needs every tetrahedron positively oriented (or the Jacobian
