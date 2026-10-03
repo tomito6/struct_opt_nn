@@ -23,7 +23,10 @@ What it does
 ------------
 1. Draw admissible ``(x_c, y_c, r)`` triples
    (:class:`datagen.plate_hole_params.PlateHoleSpace`: Sobol by default, or
-   an even sweep of the radius alone with ``--radius-only``).
+   an even sweep of the radius alone with ``--radius-only``). ``--large-holes``
+   appends holes from the top of the radius range, which the Sobol draw barely
+   reaches: 8 of the 134 default shapes have ``r > 0.25`` and none lies
+   between 0.34 and the extreme at 0.45.
 2. For each triple, sample the exact signed distance of the plate in the
    normalized frame (:mod:`datagen.plate_hole_sdf`): uniform points plus a band
    around the outer edge and the hole wall.
@@ -49,6 +52,7 @@ Examples
     uv run python -m datagen.make_plate_hole --dim 2 --n 32 --name pilot_2d --plot
     uv run python -m datagen.make_plate_hole --dim 3 --thickness 0.1
     uv run python -m datagen.make_plate_hole --dim 2 --dry-run
+    uv run python -m datagen.make_plate_hole --dim 2 --large-holes 32 --large-holes-from 0.25 --name plate_hole_2d_xyr_n166
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ from datetime import datetime
 
 import numpy as np
 
-from datagen import dataset
+from datagen import dataset, preview
 from datagen.plate_hole_params import (
     DEFAULT_R_MIN,
     PlateHoleSpace,
@@ -160,6 +164,23 @@ def build_parser() -> argparse.ArgumentParser:
         "(with --radius-only and a drawn --method: the two end radii; a grid "
         "always holds them)",
     )
+    space.add_argument(
+        "--large-holes",
+        type=int,
+        default=0,
+        metavar="N",
+        help="append N more holes with the radius spread evenly over "
+        "[--large-holes-from, r_max] and the centre free in the room that "
+        "leaves: the top of the radius range, which the main draw barely "
+        "reaches (not with --radius-only)",
+    )
+    space.add_argument(
+        "--large-holes-from",
+        type=float,
+        default=None,
+        metavar="R",
+        help="smallest radius of the --large-holes, in design units",
+    )
 
     geom = parser.add_argument_group("geometry and frame")
     geom.add_argument(
@@ -240,6 +261,16 @@ def make_manifest(args, space, params, frame, config, argv) -> dict:
             "seed": args.seed,
             "t_power": args.t_power,
             "include_extremes": not args.no_extremes,
+            "large_holes": (
+                {
+                    "n": args.large_holes,
+                    "r_from": args.large_holes_from,
+                    "seed": args.seed + 1,
+                    "position": "appended after the main draw",
+                }
+                if args.large_holes
+                else None
+            ),
         },
         "frame": frame.as_dict(args.dim),
         "sdf_sampling": config.as_dict()
@@ -250,74 +281,18 @@ def make_manifest(args, space, params, frame, config, argv) -> dict:
 def plot_preview(paths, params, frame, dim, n_show=PREVIEW_INSTANCES):
     """Field and stored samples of a few instances, read back from disk.
 
-    Each panel shows the exact field (colour, zero level in black) and, on top,
-    a subsample of the rows actually written to the ``.npz`` -- the check that
-    the files hold what the field says. For ``dim=3`` it is the mid-plane
-    ``z = 0`` and the samples within a thin slab around it.
+    See :func:`datagen.preview.plot_preview`, which draws the panels for
+    every plate family.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    idx = np.unique(
-        np.linspace(0, len(params) - 1, min(n_show, len(params))).astype(int)
-    )
-    names = params.names
-    fig, axs = plt.subplots(2, 3, figsize=(13, 8.4))
-    grid = np.linspace(-1.0, 1.0, 241)
-    gx, gy = np.meshgrid(grid, grid)
-    plane = np.column_stack([gx.ravel(), gy.ravel()])
-    if dim == 3:
-        plane = np.column_stack([plane, np.zeros(len(plane))])
-
-    for ax, i in zip(axs.ravel(), idx):
-        phi = plate_hole_sdf(dim, frame, params.x_c[i], params.y_c[i], params.r[i])
-        field = phi(plane).reshape(gx.shape)
-        lim = float(np.abs(field).max())
-        ax.imshow(
-            field,
-            extent=(-1, 1, -1, 1),
-            origin="lower",
-            cmap="RdBu_r",
-            vmin=-lim,
-            vmax=lim,
-        )
-        ax.contour(gx, gy, field, levels=[0.0], colors="k", linewidths=1.2)
-
-        with np.load(paths["class_dir"] / f"{names[i]}.npz") as npz:
-            rows = np.vstack([npz["pos"], npz["neg"]])
-        if dim == 3:
-            rows = rows[np.abs(rows[:, 2]) < 0.02]
-        rng = np.random.default_rng(i)
-        rows = rows[rng.permutation(len(rows))[:1500]]
-        ax.scatter(
-            rows[:, 0],
-            rows[:, 1],
-            s=1.5,
-            c=np.where(rows[:, -1] < 0, "k", "0.55"),
-            linewidths=0,
-        )
-        ax.set_title(
-            f"x_c={params.x_c[i]:.3f}  y_c={params.y_c[i]:.3f}  r={params.r[i]:.3f}",
-            fontsize=9,
-        )
-        ax.set_xlim(-1.05, 1.05)
-        ax.set_ylim(-1.05, 1.05)
-        ax.set_aspect("equal")
-    for ax in axs.ravel()[len(idx) :]:
-        ax.axis("off")
-
-    where = "plane" if dim == 2 else "mid-plane z = 0"
-    fig.suptitle(
-        f"{paths['dataset_dir'].name}: exact field on the {where} "
-        "(black line: surface) and stored samples (black: inside)"
-    )
-    fig.tight_layout()
-    out = paths["dataset_dir"] / "preview.png"
-    fig.savefig(out, dpi=130)
-    plt.close(fig)
-    return out
+    fields = [
+        plate_hole_sdf(dim, frame, x, y, r)
+        for x, y, r in zip(params.x_c, params.y_c, params.r)
+    ]
+    titles = [
+        f"x_c={x:.3f}  y_c={y:.3f}  r={r:.3f}"
+        for x, y, r in zip(params.x_c, params.y_c, params.r)
+    ]
+    return preview.plot_preview(paths, dim, params.names, fields, titles, n_show)
 
 
 def main(argv=None):
@@ -326,6 +301,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.centre is not None and not args.radius_only:
         parser.error("--centre only makes sense together with --radius-only")
+    if args.large_holes < 0:
+        parser.error("--large-holes must not be negative")
+    if args.large_holes and args.radius_only:
+        parser.error(
+            "--large-holes moves the centre; it does not go with --radius-only"
+        )
+    if args.large_holes and args.large_holes_from is None:
+        parser.error("--large-holes needs --large-holes-from")
+    if args.large_holes_from is not None and not args.large_holes:
+        parser.error("--large-holes-from only makes sense together with --large-holes")
     suffix = "_r" if args.radius_only else ""
     args.name = args.name or f"plate_hole_{args.dim}d{suffix}"
     # The two families have different natural defaults: a low-discrepancy
@@ -359,6 +344,18 @@ def main(argv=None):
             include_extremes=not args.no_extremes,
             t_power=args.t_power,
         )
+        if args.large_holes:
+            # Appended, so the instances of the plain draw keep their index --
+            # and, with the per-index seeding below, their samples: the first
+            # part of the dataset is the one made without --large-holes. The
+            # seed is another one so the two draws do not share their points.
+            try:
+                large = space.sample_large_holes(
+                    args.large_holes, args.large_holes_from, seed=args.seed + 1
+                )
+            except ValueError as exc:
+                parser.error(str(exc))
+            params = params.extended(large)
     # Instance names carry 4 decimals; the de-duplication in sample() works at
     # 9. On a plate measured in small units two distinct holes can share a
     # name and overwrite each other's .npz, so stop before writing anything.

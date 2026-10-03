@@ -764,6 +764,219 @@ Pra ficar "sem se influenciar" de verdade faltam duas coisas baratas
 (~30 linhas): sufixo de segundos + PID no nome automático, e um timer de
 refresh nas listas. Não fiz; fica na fila.
 
+## Os buracos do "Latent coverage" e o dataset de 166 formas (30/09)
+
+Pergunta: o que são as faixas bege do painel *Latent coverage* no decoder
+`plate_hole_2d_xyr_d3_ep800`? São o maior trecho de cada eixo latente sem
+nenhum código treinado, pintado quando passa de 12 % da faixa
+(`viz.GAP_FRACTION`). Medido nos três runs d = 3 (códigos quase idênticos,
+mesma seed):
+
+| eixo | buraco | fração | forma sozinha do outro lado | vizinha mais próxima |
+|---|---|---|---|---|
+| λ₁ | +0,27 .. +0,47 | 29 % | furo centrado `r = 0,45` (extremo) | `r = 0,342` em (0,57; 0,50) |
+| λ₃ | −0,31 .. −0,18 | 23 % | canto (0,88; 0,88), `r = 0,07` (extremo) | (0,866; 0,834), `r = 0,07` |
+| λ₂ | +0,26 .. +0,29 | 5 % | canto (0,12; 0,88) | — (não pinta) |
+
+- **O de λ₁ é buraco nos dados.** λ₁ carrega o raio (Pearson 0,82) e o
+  dataset não tem furo entre 0,342 e 0,45: só 8 das 134 formas têm r > 0,25,
+  a metade de cima da faixa de raio. Furo grande exige centro no meio da placa
+  **e** `t` perto de 1 — um cantinho do cubo unitário —, e `--t-power` não
+  resolve porque não puxa o centro pro meio.
+- **O de λ₃ não é.** A vizinha do canto está a 0,05 no centro do furo, mesmo
+  raio; e não é inicialização congelada (o código do canto saiu de +0,01 na
+  época 1 pra −0,31 na 200 e ficou). É o espaço latente esticando perto do
+  canto. Mais dados não garantem fechar.
+- **`ep800` parou na época 680** (`latest.pth`; não tem `800.pth` nem
+  `training_summary.json`). O run completo de 800 com a mesma receita é o
+  `plate_hole_2d_xyr_d3_20260930_0124` (7 h 47, loss 0,0058).
+
+O que foi feito:
+
+- **`--large-holes N --large-holes-from R`** no `datagen.make_plate_hole`
+  (`PlateHoleSpace.sample_large_holes` + `HoleParameters.extended`): N furos
+  a mais com o **raio** uniforme em [R, r_max] (Sobol, um raio por fatia de
+  1/N) e o centro uniforme no retângulo que aquele raio deixa — a seção da
+  pirâmide naquela altura. Os três parâmetros continuam variando. Vão
+  **depois** do sorteio principal, com seed + 1; como a seed das amostras é
+  por índice, as primeiras formas saem byte a byte iguais às do dataset sem a
+  flag. O manifesto grava em `parameter_sampling.large_holes`.
+- **Dataset `plate_hole_2d_xyr_n166`** (100 MB): as 134 de sempre + 32 com r
+  em [0,25; 0,45]. Maior salto de raio: 0,017 (era 0,108); formas com
+  r > 0,25: 40 (eram 8). Conferido: os 134 `.npz` idênticos aos do `xyr`,
+  auditoria da GUI sem problemas.
+
+  ```
+  uv run python -m datagen.make_plate_hole --dim 2 --n-uniform 25000 --n-band 25000 --large-holes 32 --large-holes-from 0.25 --name plate_hole_2d_xyr_n166 --plot
+  ```
+- **`experiments/train_plate_xyr_n166.py`**: copia o `specs.json` do run de
+  referência (`--like`, default `ep800`) chave por chave, troca só split e
+  descrição, imprime quais chaves diferem e se recusa a treinar se a receita
+  mudar. Sem prazo. No fim mede a cobertura (a tabela acima) do run novo e da
+  referência → `latent_coverage.json`; `--check-only` faz só isso.
+- **Lançado 30/09 17:28**, escondido, `runs/plate_hole_2d_xyr_n166_d3_ep800`,
+  800 épocas. Teste de 2 épocas antes: 58 s/época com o laptop em uso (166
+  formas = 41 passos); à noite deve ir a ~43. Previsão: pronto entre ~03:00 e
+  ~06:30 de 01/10. Log em `outputs/logs/plate_hole_2d_xyr_n166_d3_ep800.log`,
+  PID no `.pid` ao lado.
+- **O que esperar:** λ₁ sem faixa bege (os 16 raios novos acima de 0,35
+  preenchem o trecho); λ₃ provavelmente continua com a dela.
+
+## Placa com quatro furos triangulares: o dataset `plate_tri_2d_h` (30/09)
+
+Segunda família de placa. Quadrado unitário, quatro triângulos isósceles, um
+por quarto da placa: base paralela à borda mais próxima, ponta apontando pro
+centro — sobra uma moldura e um X. Os centros (meio da altura do triângulo)
+ficam fixos em 0,25 / 0,75. Único parâmetro: a altura `h`, igual nos quatro,
+de **0,05 a 0,3**. Base = 2h (ponta de 90°, como no desenho de referência; os
+braços do X ficam com largura constante).
+
+As contas, no quadrado unitário:
+
+- parede entre base e borda = folga entre ponta e centro = `1/4 − h/2`.
+  Em h = 0,3 dá 0,1 — a mesma margem do furo redondo; em h = 0,05, 0,225.
+  É isso que fixa `h_max = 1/2 − 2·margem = 0,3`.
+- braço do X (largura transversal) = `(1/2 − h)/√2` → 0,141 em h_max.
+  Nunca é o limitante.
+- `h_min = 0,05` foi dado à mão: 1,6 células em N = 32 (o furo redondo pedia
+  ≥ 4). O dataset não liga, o campo é exato; malhar as menores pra FEM vai
+  precisar N ≥ 80.
+
+O que foi feito:
+
+- **`datagen/plate_tri_params.py`** — `PlateTriSpace(size, margin, h_min)`,
+  `sample()` = varredura uniforme como o `sample_radius` do furo,
+  `triangle_vertices()`. **`datagen/plate_tri_sdf.py`** — SDF exato
+  `max(placa, −min dos 4 triângulos)` com a fórmula exata de distância a
+  triângulo; frame, extrusão e config de amostragem são importados do módulo
+  do furo, não copiados. Já aceita quatro alturas (ordem top, bottom, left,
+  right) pra família seguinte. **`datagen/make_plate_tri.py`** — mesma CLI do
+  `make_plate_hole`. **`datagen/preview.py`** — o `preview.png` que os dois
+  scripts agora compartilham. Testes em `tests/test_datagen.py`: campo 2-D
+  contra força bruta (sinal por `matplotlib.Path`, implementação
+  independente), 3-D extrudado, banda nas arestas, layout dos arquivos,
+  auditoria da GUI em 3-D.
+- **Dataset `plate_tri_2d_h`** (24 MB): 40 alturas de 0,05 a 0,3 em passo
+  uniforme, 25k uniformes + 25k banda por forma (50 % da banda nas 12
+  arestas), mesmo frame do furo (pad 0,1, escala 1,8). Fração dentro
+  51–69 %. `params.csv` tem `name, h, t, base, wall, arm`; `preview.png` e
+  `parameters.png` na pasta.
+
+  ```
+  uv run python -m datagen.make_plate_tri --dim 2 --n-uniform 25000 --n-band 25000 --name plate_tri_2d_h --plot
+  ```
+
+- Pra "vários tipos de dados" depois: só falta um sampler de quatro alturas
+  no `plate_tri_params` e colunas a mais no `params.csv` — a geometria já
+  está pronta.
+
+## Triângulos com d = 1: preset e treino de 8 min (30/09, 23:52)
+
+Pedido: "adiciona o preset e lança o treino com d = 1".
+
+- **Preset `runs/preset_plate2d_tri_h_d1`** — terceira linha do
+  `experiments/make_plate_presets.py`, mesma receita dos outros dois (4 × 64
+  ReLU, 1500 épocas, lr caindo pela metade em 500 e 1000, 4096 amostras por
+  forma, 5 formas por batch → 8 passos por época, σ = 0,1), dataset
+  `plate_tri_2d_h`, d = 1. O script reescreve os três presets; os dois antigos
+  saem iguais.
+- **`experiments/train_plate_tri_d1.py`** — copia o `specs.json` do preset
+  chave por chave (só a descrição muda; imprime o que difere e se recusa se
+  a receita mudasse), treina sem prazo, grava `metadata.json` e no fim
+  compara o código aprendido com a coluna `h` do `params.csv` →
+  `code_vs_h.csv` / `code_vs_h.png` na pasta do run (`--check-only` faz só a
+  comparação). `--start-at`, `--after`, `--epochs N --run smoke` como os
+  outros.
+- **Duas funções foram pra `structsept/app/unattended.py`** porque ganharam
+  um segundo chamador: `prepare_run_like` (copiar a receita de outro run;
+  era o `prepare_run` do `train_plate_xyr_n166.py`) e `code_vs_parameter`
+  (código × parâmetro gerador, qualquer coluna; era o
+  `compare_code_with_radius` do `train_plate_r_only_4h.py`). Os dois scripts
+  viraram wrappers finos; testes novos em `tests/test_app_unattended.py`
+  (19 passam). Fumaça: tri com 2 épocas e n166 com 1 época, os dois ok.
+- **Lançado 30/09 23:52:56**, escondido (`Start-Process -WindowStyle
+  Hidden`), PID 20252, run `runs/plate_tri_2d_h_d1_4x64`. Log em
+  `outputs/logs/plate_tri_2d_h_d1_4x64.log`, PID no `.pid` ao lado. Deve
+  levar ~8–10 min.
+- **O que esperar:** como no furo só-raio (Pearson −1,000, monotônico), o
+  código deve sair uma reta contra `h`. Se não sair, o suspeito é o
+  triângulo pequeno (h = 0,05 é uma feição de 0,1 de base) que o decoder
+  4 × 64 pode borrar.
+
+**Resultado (01/10, 00:13):** 1500 épocas em 20,6 min (mais que os ~8 min
+estimados: os testes e os runs de fumaça rodaram junto no começo). O código
+é uma **reta contra `h`**: Pearson −1,000, Spearman −1,000, monotônico, de
++0,111 (h = 0,05) a −0,162 (h = 0,3) — o mesmo resultado do furo só-raio, com
+o triângulo pequeno incluído. `code_vs_h.png` / `.csv` e
+`training_summary.json` na pasta do run.
+
+## Triângulos com altura E largura livres: `plate_tri_2d_hw`, d = 2 (01/10)
+
+Pedido: "test data + o test itself com o width mudando também, até 0,6
+independente da altura — ou faça a escolha que achar melhor; latente 2".
+
+- **A largura não pode ser 0,6 em qualquer altura.** O triângulo de cima e o
+  da direita são imagens espelhadas pela diagonal da placa, então a distância
+  entre eles é 2× a distância do triângulo à diagonal, atingida num vértice:
+  `√2 · min(1/4 + (h − w)/2, 1/4 − h/2)`. Com w = 0,6 e h = 0,05 dá negativo
+  — os dois se sobrepõem. A regra da margem 0,1 vira `w ≤ h + 0,5 − √2·0,1 =
+  h + 0,359`. Escolha: **`w_max(h) = min(0,6; h + 0,359)`** — o 0,6 do
+  pedido vale a partir de h ≈ 0,24; abaixo manda o ligamento. `w_min = 0,1`
+  (a menor base da família só-altura). O conjunto viável em (h, w) é um
+  trapézio; como no furo, sorteia-se num quadrado unitário `(t_h, t_w)` e
+  mapeia-se (`from_unit`/`to_unit`), então o latente prescrito continua uma
+  caixa. A família só-altura é a reta w = 2h dentro dessa. Conferido nos
+  testes: fórmula do braço contra força bruta (distância mínima entre as
+  duas linhas de contorno), em 4 pares (h, w).
+- **Código:** `PlateTriSpace` ganhou `w_min`, `w_cap`, `max_width(h)`,
+  `from_unit`/`to_unit`, `sample_hw()`; `clearances()` agora devolve 4
+  linhas (wall, tip, arm, side) e aceita `w`. `TriParameters` ganhou `w`
+  opcional (`None` = base 2h) — nomes `tri_h…_w…`, `params.csv` com
+  `name,h,w,t_h,t_w,w_max,wall,arm,side`. `plate_tri_sdf` troca `base_ratio`
+  por `bases` (largura explícita). `make_plate_tri --free-width`. Os 40 `.npz`
+  do `plate_tri_2d_h` saem **byte a byte iguais** com o código novo
+  (conferido). `code_vs_parameter` ganhou o R² do ajuste linear do parâmetro
+  sobre os componentes (a base latente é arbitrária, então é isso, não
+  componente a componente, que diz se o parâmetro está no código).
+- **Dataset `plate_tri_2d_hw`** (32 MB): Sobol 128 + 5 extremos (cantos e
+  centro do quadrado unitário: mínimo, agulha, lâmina, o desenho, meio) =
+  133 formas, 25k + 25k por forma. Dentro 52–69 %.
+
+  ```
+  uv run python -m datagen.make_plate_tri --dim 2 --free-width --n-uniform 25000 --n-band 25000 --name plate_tri_2d_hw --plot
+  ```
+- **Preset `runs/preset_plate2d_tri_hw_d2`** (mesma receita, d = 2,
+  σ = 0,141; 133/5 → 3 formas sobram por época). Launcher unificado
+  `experiments/train_plate_tri.py --family h|hw` (substitui o
+  `train_plate_tri_d1.py`); no fim faz `code_vs_h` e `code_vs_w`, cada um
+  com o R² do ajuste linear. **Treino ainda não lançado** — depende do ok.
+- **O que esperar:** os dois R² perto de 1 (h e w recuperados por
+  combinações lineares dos dois componentes), com os eixos aprendidos numa
+  orientação qualquer. Se w sair com R² baixo, o suspeito é a largura ser
+  uma feição mais fraca no campo que a altura.
+
+**Resultado (01/10, 08:43 → 09:33, 49,9 min — laptop em uso):** saiu o
+esperado. Ajuste linear de `h` sobre (λ₀, λ₁): **R² = 1,000**; de `w`:
+**R² = 0,996**. O plano latente é o trapézio (h, w) girado e cisalhado — no
+`code_vs_h.png` a cor (h) varia ao longo de uma diagonal do plano, no
+`code_vs_w.png` ao longo da outra. Componente a componente nada é
+monotônico (λ₀ × h: Pearson 0,68; λ₁ × h: 0,74; λ₀ × w: 0,88; λ₁ × w: −0,47),
+exatamente porque a base é arbitrária; 60,7 % da variância no primeiro eixo
+principal (dois parâmetros, então não é mais uma reta). Ou seja: com dois
+parâmetros geradores e d = 2, o decoder recupera os dois — a direção de `h`
+no plano é `linear_fit_direction` do `code_vs_h.csv`, a de `w` a do outro.
+Pra GUI (Explore 2-D): nenhum slider sozinho é "altura" ou "largura"; os
+eixos úteis são essas duas direções.
+
+**O run `plate_hole_2d_xyr_n166_d3_ep800` morreu.** Descoberto ao lançar
+este: PID 14644 não existe mais, `latest.pth` gravado pela última vez às
+18:51 na **época 80 de 800**, log sem erro nenhum (só as linhas de
+partida). Causa desconhecida (a máquina não reiniciou). Opções: relançar do
+zero com `--force` (encadeado com `--after outputs/logs/plate_tri_2d_h_d1_4x64.pid`),
+ou continuar da época 80 — o `train_deep_sdf` da biblioteca aceita
+`continue_from="latest"`, mas o `structsept.app.training.train` ainda não
+expõe isso.
+
 ## Perguntas em aberto
 
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram

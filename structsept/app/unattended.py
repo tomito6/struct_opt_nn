@@ -408,3 +408,283 @@ def split_names(split_path) -> list[str]:
     """
     split = json.loads(pathlib.Path(split_path).read_text(encoding="utf-8"))
     return [n for ds in split.values() for cls in ds.values() for n in cls]
+
+
+# --------------------------------------------------------------------------- #
+# a run whose recipe is another run's specs.json
+# --------------------------------------------------------------------------- #
+
+#: The only ``specs.json`` keys :func:`prepare_run_like` lets a copied run
+#: differ in: where the data is, and what the run says about itself.
+REPLACED_KEYS = ("DataSource", "TrainSplit", "TestSplit", "Description")
+
+
+def prepare_run_like(
+    run_dir,
+    like_dir,
+    data_root,
+    dataset,
+    description,
+    epochs=None,
+    force=False,
+    log=say,
+    build_hint="",
+):
+    """Write the ``specs.json`` of ``like_dir`` for ``dataset`` into ``run_dir``.
+
+    The recipe is not spelled out by the caller: it is the reference run's
+    (or preset's) ``specs.json``, copied key for key, so "same recipe" is a
+    fact about files rather than a promise. Only :data:`REPLACED_KEYS` are
+    then pointed at ``dataset`` and ``description``; the keys that differ are
+    printed, and if any other one does the process exits before training.
+
+    Parameters
+    ----------
+    run_dir, like_dir : path-like
+        The run to write and the run whose specs are the recipe.
+    data_root : path-like
+    dataset : str
+        Dataset name, as ``datasets.list_datasets`` lists it. Must have the
+        dimension the reference decoder takes.
+    description : str
+        The new run's ``Description``.
+    epochs : int or None
+        A smoke test only, never the real run: replaces the epoch count and
+        clamps the two save intervals to it, so a 2-epoch run still ends
+        with a ``latest.pth``. The recipe check is skipped when set.
+    force : bool
+        Train over a run directory that already holds a checkpoint.
+    log : callable
+    build_hint : str
+        Printed when the dataset is missing: the command that makes it.
+
+    Returns
+    -------
+    (dict, list of str)
+        The dataset row of ``datasets.list_datasets`` and the specs keys
+        that differ from the reference.
+
+    Exits the process (``sys.exit``) when the reference has no specs, the
+    dataset is missing or of another dimension, ``run_dir`` already holds a
+    checkpoint and ``force`` is off, or the recipe itself would differ.
+    """
+    from structsept.app import datasets, training
+
+    run_dir, like_dir = pathlib.Path(run_dir), pathlib.Path(like_dir)
+    if (run_dir / "ModelParameters" / "latest.pth").is_file() and not force:
+        sys.exit(
+            f"{run_dir} already holds a trained checkpoint; pick another "
+            "--run or pass --force to train over it"
+        )
+    reference = training.read_specs(like_dir / "specs.json")
+    if not reference:
+        sys.exit(f"{like_dir} has no readable specs.json to copy the recipe from")
+    rows = {d["name"]: d for d in datasets.list_datasets(data_root)}
+    row = rows.get(dataset)
+    if row is None or not row["split"]:
+        hint = f"; build it with\n  {build_hint}" if build_hint else ""
+        sys.exit(f"dataset {dataset} not found under {data_root}{hint}")
+    geom = (reference.get("NetworkSpecs") or {}).get("geom_dimension", 3)
+    if row["geom_dimension"] != geom:
+        sys.exit(
+            f"{dataset} is {row['geom_dimension']}-D, the decoder of "
+            f"{like_dir.name} takes {geom} coordinates"
+        )
+
+    specs = json.loads(json.dumps(reference))  # a deep copy
+    specs["DataSource"] = str(data_root)
+    specs["TrainSplit"] = specs["TestSplit"] = str(row["split"])
+    specs["Description"] = description
+    if epochs is not None:
+        specs["NumEpochs"] = int(epochs)
+        for key in ("LogFrequency", "SnapshotFrequency"):
+            specs[key] = min(int(specs[key]), int(epochs))
+
+    changed = sorted(
+        k for k in set(specs) | set(reference) if specs.get(k) != reference.get(k)
+    )
+    log(f"specs.json differs from {like_dir.name} in: {', '.join(changed)}")
+    if epochs is None and not set(changed) <= set(REPLACED_KEYS):
+        sys.exit("refusing to train: the recipe itself would differ")
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "specs.json").write_text(json.dumps(specs, indent=4), encoding="utf-8")
+    training.write_metadata(run_dir, dataset=dataset, preset=False)
+    log(
+        f"run {run_dir.name}: {row['n_instances']} shapes, d={specs['CodeLength']}, "
+        f"{specs['NumEpochs']} epochs"
+    )
+    return row, changed
+
+
+# --------------------------------------------------------------------------- #
+# the codes against the generating parameter
+# --------------------------------------------------------------------------- #
+
+
+def code_vs_parameter(run_dir, dataset_dir, split_path, param, label=None, log=say):
+    """Compare the learned code of every shape with one column of ``params.csv``.
+
+    The check every one-parameter family ends with: does the number the
+    decoder learned per shape track the number the shape was made from?
+    Every component of the code is looked at on its own -- Pearson and
+    Spearman correlation with the parameter, and whether it is monotonic in
+    it. With more than one component the codes are also looked at together:
+    the share of their variance along the first principal axis says how
+    one-dimensional the set is (1.0 = every code on one straight line, which
+    is all a single generating parameter can need), and the correlation of
+    the position along that axis with the parameter says whether the line is
+    ordered by it.
+
+    Parameters
+    ----------
+    run_dir : path-like
+    dataset_dir : path-like
+        Folder holding ``params.csv``.
+    split_path : path-like
+        The split the run was trained on. The latent index is its order, so
+        the names in it are matched against the ``name`` column of
+        ``params.csv`` rather than trusting row order.
+    param : str
+        The column to compare against: ``"r"`` for the hole, ``"h"`` for
+        the triangles.
+    label : str or None
+        Axis label of the parameter; default ``"<param> (design units)"``.
+    log : callable
+
+    Returns
+    -------
+    dict
+        The numbers, or ``{}`` when the run holds no codes. Also written into
+        the run directory: ``code_vs_<param>.csv`` (name, param, code_0,
+        code_1, ...) and ``code_vs_<param>.png``.
+    """
+    import csv
+
+    import numpy as np
+
+    run_dir = pathlib.Path(run_dir)
+    label = label or f"{param} (design units)"
+    codes = load_codes(run_dir)
+    if codes is None:
+        log(f"no latent codes saved, skipping the code-vs-{param} check")
+        return {}
+
+    names = split_names(split_path)
+    with open(pathlib.Path(dataset_dir) / "params.csv", newline="") as fh:
+        table = {row["name"]: float(row[param]) for row in csv.DictReader(fh)}
+    p = np.array([table[n] for n in names])
+    codes = codes[: len(names)]  # (N, d)
+    d = codes.shape[1]
+    order = np.argsort(p)
+    rank = lambda v: np.argsort(np.argsort(v))
+
+    def against(values):
+        """Correlations of one number per shape with the parameter."""
+        steps = np.diff(values[order])
+        return {
+            "pearson": float(np.corrcoef(p, values)[0, 1]),
+            "spearman": float(np.corrcoef(rank(p), rank(values))[0, 1]),
+            "monotonic": bool(np.all(steps > 0) or np.all(steps < 0)),
+            "min": float(values.min()),
+            "max": float(values.max()),
+        }
+
+    components = [against(codes[:, k]) for k in range(d)]
+    result = {"parameter": param, "latent_dim": d, "components": components}
+    if d > 1:
+        centred = codes - codes.mean(axis=0)
+        # Principal axes by SVD: the squared singular values are the variances
+        # of the codes along each axis.
+        _, sigma, axes = np.linalg.svd(centred, full_matrices=False)
+        total = float(np.sum(sigma**2))
+        along = centred @ axes[0]
+        result["pc1_variance_share"] = sigma[0] ** 2 / total if total else float("nan")
+        result["pc1_axis"] = axes[0].tolist()
+        result["pc1"] = against(along)
+        # A learned latent basis is arbitrary, so with several generating
+        # parameters no single component has to track this one. If the codes
+        # are an affine relabelling of the parameters, a linear map of the
+        # codes recovers it: R^2 of that least-squares fit, with intercept.
+        # A low R^2 says "not linearly readable", not "absent": the d = 2 run
+        # on the three-parameter plate has R^2 0.009 for the radius, yet a
+        # 3-nearest-neighbour fit in code space recovers it with 0.69 and the
+        # decoded hole follows the true radius (Spearman 0.86). The codes
+        # hold it on a curved surface.
+        design = np.column_stack([codes, np.ones(len(codes))])
+        coef, *_ = np.linalg.lstsq(design, p, rcond=None)
+        ss_res = float(np.sum((p - design @ coef) ** 2))
+        ss_tot = float(np.sum((p - p.mean()) ** 2))
+        result["linear_fit_r2"] = 1.0 - ss_res / ss_tot if ss_tot else float("nan")
+        result["linear_fit_direction"] = coef[:-1].tolist()
+
+    with open(run_dir / f"code_vs_{param}.csv", "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["name", param] + [f"code_{k}" for k in range(d)])
+        for n, value, row in zip(names, p, codes):
+            writer.writerow([n, f"{value:.6f}"] + [f"{c:.6f}" for c in row])
+
+    import matplotlib.pyplot as plt
+
+    def describe(stats):
+        return (
+            f"Pearson {stats['pearson']:+.3f}, Spearman {stats['spearman']:+.3f}, "
+            f"{'monotonic' if stats['monotonic'] else 'NOT monotonic'}"
+        )
+
+    if d == 1:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.plot(p[order], codes[order, 0], "o-", ms=4)
+        ax.set_xlabel(label)
+        ax.set_ylabel("learned latent code")
+        ax.set_title(f"{run_dir.name}\n{describe(components[0])}")
+        ax.grid(True, alpha=0.3)
+    else:
+        fig, (left, right) = plt.subplots(1, 2, figsize=(10, 4.2))
+        for k in range(d):
+            left.plot(p[order], codes[order, k], "o-", ms=4, label=f"code {k}")
+        left.set_xlabel(label)
+        left.set_ylabel("learned latent code, per component")
+        left.legend()
+        left.grid(True, alpha=0.3)
+        left.set_title(
+            "\n".join(f"code {k}: {describe(s)}" for k, s in enumerate(components)),
+            fontsize=9,
+        )
+        # The latent plane itself (the first two principal coordinates when
+        # d > 2), coloured by the parameter and threaded in its order.
+        if d == 2:
+            xy, xlabel, ylabel = codes, "code 0", "code 1"
+        else:
+            xy = centred @ axes[:2].T
+            xlabel, ylabel = "principal coordinate 1", "principal coordinate 2"
+        right.plot(xy[order, 0], xy[order, 1], "-", color="0.7", lw=1, zorder=1)
+        sc = right.scatter(xy[:, 0], xy[:, 1], c=p, cmap="viridis", s=28, zorder=2)
+        fig.colorbar(sc, ax=right, label=label)
+        right.set_xlabel(xlabel)
+        right.set_ylabel(ylabel)
+        right.set_aspect("equal", adjustable="datalim")
+        right.grid(True, alpha=0.3)
+        right.set_title(
+            f"{result['pc1_variance_share'] * 100:.1f} % of the variance on one axis\n"
+            f"along it: {describe(result['pc1'])}\n"
+            f"linear fit of {param} on the codes: R² = {result['linear_fit_r2']:.3f}",
+            fontsize=8,
+        )
+        fig.suptitle(run_dir.name)
+    fig.tight_layout()
+    fig.savefig(run_dir / f"code_vs_{param}.png", dpi=120)
+    plt.close(fig)
+
+    for k, stats in enumerate(components):
+        log(
+            f"code {k} vs {param}: {describe(stats)} "
+            f"(from {stats['min']:+.3f} to {stats['max']:+.3f})"
+        )
+    if d > 1:
+        log(
+            f"codes together: {result['pc1_variance_share'] * 100:.1f} % of the "
+            f"variance along one axis; along it {describe(result['pc1'])}; "
+            f"linear fit of {param} on the codes R^2 = {result['linear_fit_r2']:.3f}"
+        )
+    return result

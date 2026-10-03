@@ -156,6 +156,11 @@ class PlateFrame:
             raise ValueError("this frame has no thickness; build it with one for 3-D")
         return 0.5 * self.scale * self.thickness
 
+    def to_normalized(self, xy) -> np.ndarray:
+        """Map design-frame points of shape ``(..., 2)`` into the normalized frame."""
+        centre = np.array([0.5 * self.length, 0.5 * self.width])
+        return self.scale * (np.asarray(xy, dtype=float) - centre)
+
     def hole(self, x_c, y_c, r) -> tuple[np.ndarray, float]:
         """Hole centre and radius in the normalized frame."""
         centre = np.array(

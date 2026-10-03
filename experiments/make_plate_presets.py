@@ -1,28 +1,36 @@
-"""Write the two untrained presets of the plate-with-hole experiment into runs/.
+"""Write the untrained presets of the plate experiments into runs/.
 
 A preset is a run directory holding only ``specs.json`` and ``metadata.json``:
 the Train tab's "All hyperparameters... > Start from > run: <name>" loads it,
 and nothing has been trained yet. ``runs/`` is gitignored and the specs carry
 absolute paths, so this script is how the presets are regenerated on another
-machine, after the two datasets have been built::
+machine, after the datasets have been built::
 
     uv run python -m datagen.make_plate_hole --dim 2 --radius-only \\
         --n-uniform 25000 --n-band 25000 --name plate_hole_2d_r_only --plot
     uv run python -m datagen.make_plate_hole --dim 2 \\
         --n-uniform 25000 --n-band 25000 --name plate_hole_2d_xyr --plot
+    uv run python -m datagen.make_plate_tri --dim 2 \\
+        --n-uniform 25000 --n-band 25000 --name plate_tri_2d_h --plot
+    uv run python -m datagen.make_plate_tri --dim 2 --free-width \\
+        --n-uniform 25000 --n-band 25000 --name plate_tri_2d_hw --plot
     uv run python experiments/make_plate_presets.py
 
-The two families
-----------------
+The four families
+-----------------
 ================================  ======================  ===  =================
 preset                            dataset                 d    sigma
 ================================  ======================  ===  =================
 ``preset_plate2d_r_only_d1``      ``plate_hole_2d_r_only``  1  sqrt(0.01 * 1)
 ``preset_plate2d_xyr_d3``         ``plate_hole_2d_xyr``     3  sqrt(0.01 * 3)
+``preset_plate2d_tri_h_d1``       ``plate_tri_2d_h``        1  sqrt(0.01 * 1)
+``preset_plate2d_tri_hw_d2``      ``plate_tri_2d_hw``       2  sqrt(0.01 * 2)
 ================================  ======================  ===  =================
 
 The latent dimension equals the number of generating parameters in each case:
-one plate family whose hole only grows, one whose hole also moves. Everything
+one plate family whose hole only grows, one whose hole also moves, one whose
+four triangular holes grow together, and one whose triangles change height
+and base width independently. Everything
 else is the ``preset_plate2d_30min`` recipe (the spreadsheet's "Quick setup"
 scaled to a 30-minute CPU run): 4 x 64 ReLU, no dropout, 4096 samples per
 shape, 5 shapes per batch, Adam 5e-4 / 1e-3 halved at epochs 500 and 1000,
@@ -88,6 +96,35 @@ PRESETS = [
             "columns x_c, y_c, r."
         ),
     },
+    {
+        "run": "preset_plate2d_tri_h_d1",
+        "dataset": "plate_tri_2d_h",
+        "latent_dim": 1,
+        "description": (
+            "Preset, untrained. Square plate with FOUR TRIANGULAR holes (bases "
+            "along the edges, tips towards the centre), only their shared "
+            "height varies (40 heights, h 0.05-0.3, base = 2h): one generating "
+            "parameter, latent d=1. 4x64, 1500 epochs, lr halved at 500 and "
+            "1000, 4096 samples per shape, 5 shapes per batch (8 batches/epoch, "
+            "~8 min on CPU). Pick dataset plate_tri_2d_h. Afterwards compare "
+            "the learned code with params.csv column h."
+        ),
+    },
+    {
+        "run": "preset_plate2d_tri_hw_d2",
+        "dataset": "plate_tri_2d_hw",
+        "latent_dim": 2,
+        "description": (
+            "Preset, untrained. Square plate with FOUR TRIANGULAR holes whose "
+            "height h (0.05-0.3) AND base width w (0.1 up to min(0.6, "
+            "h + 0.359)) vary independently (Sobol 128 + 5 extremes): two "
+            "generating parameters, latent d=2. 4x64, 1500 epochs, lr halved "
+            "at 500 and 1000, 4096 samples per shape, 5 shapes per batch "
+            "(~28 min on CPU). Pick dataset plate_tri_2d_hw. Afterwards fit "
+            "params.csv columns h and w linearly on the two code components "
+            "(R^2), not component by component: the learned basis is arbitrary."
+        ),
+    },
 ]
 
 
@@ -139,7 +176,7 @@ def write_preset(preset, data_root, runs_dir, log=print):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Write the two plate-with-hole training presets into runs/."
+        description="Write the untrained plate training presets into runs/."
     )
     parser.add_argument("--data-root", default=str(ROOT / "data"))
     parser.add_argument("--runs-dir", default=str(ROOT / "runs"))

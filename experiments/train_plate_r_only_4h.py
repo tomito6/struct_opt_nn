@@ -91,7 +91,6 @@ or load its hyperparameters in the Train tab with "Start from > run: <run>".
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import math
 import os
@@ -193,129 +192,19 @@ def prepare_run(
 def compare_code_with_radius(run_dir, dataset_dir, split_path, log=say):
     """Compare the learned code of every shape with its radius.
 
-    Every component of the code is checked on its own: Pearson and Spearman
-    correlation with the radius, and whether it is monotonic in it. With more
-    than one component the codes are also looked at together: the share of
-    their variance along the first principal axis says how one-dimensional
-    the set is (1.0 = every code on one straight line, which is all a single
-    generating parameter can need), and the correlation of the position along
-    that axis with the radius says whether the line is ordered by it.
-
-    Writes ``code_vs_r.csv`` (name, r, code_0, code_1, ...) and
-    ``code_vs_r.png`` into the run directory and returns a dict with the
-    numbers. The latent index is the split order, so the names in the split
-    are matched against the ``name`` column of ``params.csv`` rather than
-    trusting row order.
+    ``unattended.code_vs_parameter`` on the ``r`` column of ``params.csv``
+    (it started life here and moved when the triangle family needed the same
+    check): writes ``code_vs_r.csv`` and ``code_vs_r.png`` into the run
+    directory and returns a dict with the numbers.
     """
-    import numpy as np
-
-    run_dir = pathlib.Path(run_dir)
-    codes = unattended.load_codes(run_dir)
-    if codes is None:
-        log("no latent codes saved, skipping the code-vs-radius check")
-        return {}
-
-    names = unattended.split_names(split_path)
-    with open(pathlib.Path(dataset_dir) / "params.csv", newline="") as fh:
-        radius = {row["name"]: float(row["r"]) for row in csv.DictReader(fh)}
-    r = np.array([radius[n] for n in names])
-    codes = codes[: len(names)]  # (N, d)
-    d = codes.shape[1]
-    order = np.argsort(r)
-    rank = lambda v: np.argsort(np.argsort(v))
-
-    def against_r(values):
-        """Correlations of one number per shape with the radius."""
-        steps = np.diff(values[order])
-        return {
-            "pearson": float(np.corrcoef(r, values)[0, 1]),
-            "spearman": float(np.corrcoef(rank(r), rank(values))[0, 1]),
-            "monotonic": bool(np.all(steps > 0) or np.all(steps < 0)),
-            "min": float(values.min()),
-            "max": float(values.max()),
-        }
-
-    components = [against_r(codes[:, k]) for k in range(d)]
-    result = {"latent_dim": d, "components": components}
-    if d > 1:
-        centred = codes - codes.mean(axis=0)
-        # Principal axes by SVD: the squared singular values are the variances
-        # of the codes along each axis.
-        _, sigma, axes = np.linalg.svd(centred, full_matrices=False)
-        total = float(np.sum(sigma**2))
-        along = centred @ axes[0]
-        result["pc1_variance_share"] = sigma[0] ** 2 / total if total else float("nan")
-        result["pc1_axis"] = axes[0].tolist()
-        result["pc1"] = against_r(along)
-
-    with open(run_dir / "code_vs_r.csv", "w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["name", "r"] + [f"code_{k}" for k in range(d)])
-        for n, rr, row in zip(names, r, codes):
-            writer.writerow([n, f"{rr:.6f}"] + [f"{c:.6f}" for c in row])
-
-    import matplotlib.pyplot as plt
-
-    def describe(stats):
-        return (
-            f"Pearson {stats['pearson']:+.3f}, Spearman {stats['spearman']:+.3f}, "
-            f"{'monotonic' if stats['monotonic'] else 'NOT monotonic'}"
-        )
-
-    if d == 1:
-        fig, ax = plt.subplots(figsize=(5, 4))
-        ax.plot(r[order], codes[order, 0], "o-", ms=4)
-        ax.set_xlabel("hole radius r (design units)")
-        ax.set_ylabel("learned latent code")
-        ax.set_title(f"{run_dir.name}\n{describe(components[0])}")
-        ax.grid(True, alpha=0.3)
-    else:
-        fig, (left, right) = plt.subplots(1, 2, figsize=(10, 4.2))
-        for k in range(d):
-            left.plot(r[order], codes[order, k], "o-", ms=4, label=f"code {k}")
-        left.set_xlabel("hole radius r (design units)")
-        left.set_ylabel("learned latent code, per component")
-        left.legend()
-        left.grid(True, alpha=0.3)
-        left.set_title(
-            "\n".join(f"code {k}: {describe(s)}" for k, s in enumerate(components)),
-            fontsize=9,
-        )
-        # The latent plane itself (the first two principal coordinates when
-        # d > 2), coloured by radius and threaded in order of radius.
-        if d == 2:
-            xy, xlabel, ylabel = codes, "code 0", "code 1"
-        else:
-            xy = centred @ axes[:2].T
-            xlabel, ylabel = "principal coordinate 1", "principal coordinate 2"
-        right.plot(xy[order, 0], xy[order, 1], "-", color="0.7", lw=1, zorder=1)
-        sc = right.scatter(xy[:, 0], xy[:, 1], c=r, cmap="viridis", s=28, zorder=2)
-        fig.colorbar(sc, ax=right, label="hole radius r")
-        right.set_xlabel(xlabel)
-        right.set_ylabel(ylabel)
-        right.set_aspect("equal", adjustable="datalim")
-        right.grid(True, alpha=0.3)
-        right.set_title(
-            f"{result['pc1_variance_share'] * 100:.1f} % of the variance on one "
-            f"axis\nalong it: {describe(result['pc1'])}",
-            fontsize=9,
-        )
-        fig.suptitle(run_dir.name)
-    fig.tight_layout()
-    fig.savefig(run_dir / "code_vs_r.png", dpi=120)
-    plt.close(fig)
-
-    for k, stats in enumerate(components):
-        log(
-            f"code {k} vs r: {describe(stats)} "
-            f"(from {stats['min']:+.3f} to {stats['max']:+.3f})"
-        )
-    if d > 1:
-        log(
-            f"codes together: {result['pc1_variance_share'] * 100:.1f} % of the "
-            f"variance along one axis; along it {describe(result['pc1'])}"
-        )
-    return result
+    return unattended.code_vs_parameter(
+        run_dir,
+        dataset_dir,
+        split_path,
+        "r",
+        label="hole radius r (design units)",
+        log=log,
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -516,6 +516,67 @@ class PlateHoleSpace:
             space=self, x_c=x_all, y_c=y_all, r=r, unit=self.to_unit(x_all, y_all, r)
         )
 
+    def sample_large_holes(self, n=16, r_from=None, seed=0):
+        """Draw ``n`` holes from the top of the radius range, even in ``r``.
+
+        The part of the pyramid :meth:`sample` leaves thin. A large hole needs
+        a centre near the middle of the plate *and* a ``t`` near 1, a small
+        corner of the unit cube, so a draw of a hundred-odd shapes puts a
+        handful there and none near the tip: the 134-shape set stops at
+        ``r = 0.342`` and then holds only the prepended extreme at 0.45. A
+        decoder trained on it has a stretch of latent space between those two
+        with no shape in it (the shaded gap of the GUI's latent coverage), and
+        no bias on ``t`` fixes that, because ``t_power`` does not move the
+        centres inwards.
+
+        So here the radius itself is drawn, uniformly in
+        ``[r_from, r_max_global]``, and then the centre, uniformly in the
+        rectangle that radius leaves it -- the horizontal section of the
+        pyramid at that height, which shrinks to a point at the tip. Every
+        triple is admissible by construction, all three parameters still vary,
+        and the set is meant to be appended to one of :meth:`sample` with
+        :meth:`HoleParameters.extended`.
+
+        Parameters
+        ----------
+        n : int
+            Number of holes. A scrambled Sobol sequence is used, so a power of
+            two puts exactly one radius in each ``1 / n`` slice of the range.
+        r_from : float
+            Lower end of the radius range, in ``[r_min, r_max_global)``.
+            Required: it is where the main draw thins out, which depends on
+            how many shapes that draw has.
+        seed : int
+            Seed of the Sobol scrambling. Use another one than the main draw
+            had, or the two sets start from the same points of the cube.
+
+        Returns
+        -------
+        HoleParameters
+        """
+        n = int(n)
+        if n < 1:
+            raise ValueError("n must be at least 1")
+        if r_from is None:
+            raise ValueError("r_from is required, see the docstring")
+        r_from, r_top = float(r_from), self.r_max_global
+        if not self.r_min <= r_from < r_top:
+            raise ValueError(
+                f"r_from must lie in [r_min, r_max) = [{self.r_min}, {r_top:.4f}), "
+                f"got {r_from}"
+            )
+
+        u = qmc.Sobol(d=3, scramble=True, seed=seed).random(n)
+        r = r_from + u[:, 2] * (r_top - r_from)
+        m_l, m_r, m_b, m_t = self._margins
+        # The section of the pyramid at height r; its sides are >= 0 because
+        # r <= r_max_global, and both collapse at the tip of a square plate.
+        x_c = m_l + r + u[:, 0] * (self.length - m_l - m_r - 2.0 * r)
+        y_c = m_b + r + u[:, 1] * (self.width - m_b - m_t - 2.0 * r)
+        return HoleParameters(
+            space=self, x_c=x_c, y_c=y_c, r=r, unit=self.to_unit(x_c, y_c, r)
+        )
+
     # ------------------------------------------------------------------ reports
 
     def feasible_fraction(self, n_grid=512):
@@ -646,6 +707,37 @@ class HoleParameters:
     def rows(self):
         """Iterate as ``(name, x_c, y_c, r)`` tuples, ready to drive a builder."""
         return zip(self.names, self.x_c, self.y_c, self.r)
+
+    def extended(self, other):
+        """This set followed by ``other``, as one set of the same space.
+
+        The order is kept -- it becomes the split order and so the latent
+        index -- which means a dataset built from the result starts with
+        exactly the instances of this set. A triple of ``other`` that is
+        already here is dropped, compared at 9 decimals like
+        :meth:`PlateHoleSpace.sample` does.
+
+        Raises
+        ------
+        ValueError
+            If the two sets were drawn from different spaces.
+        """
+        if other.space != self.space:
+            raise ValueError("cannot join sets drawn from two different spaces")
+        x_c = np.concatenate([self.x_c, other.x_c])
+        y_c = np.concatenate([self.y_c, other.y_c])
+        r = np.concatenate([self.r, other.r])
+        _, keep = np.unique(
+            np.round(np.stack([x_c, y_c, r], axis=1), 9), axis=0, return_index=True
+        )
+        keep = np.sort(keep)
+        return HoleParameters(
+            space=self.space,
+            x_c=x_c[keep],
+            y_c=y_c[keep],
+            r=r[keep],
+            unit=np.vstack([self.unit, other.unit])[keep],
+        )
 
     def varied(self, tol=1e-9):
         """Names of the parameters that actually differ across the set.

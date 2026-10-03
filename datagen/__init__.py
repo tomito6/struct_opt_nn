@@ -22,10 +22,17 @@ Modules
 ``plate_hole_sdf``
     The exact signed distance of one such plate, in 2-D or 3-D, in the
     ``[-1, 1]^d`` frame the decoder works in, and the samples of it.
+``plate_tri_params``, ``plate_tri_sdf``
+    The same two steps for the square plate with four triangular holes,
+    whose one parameter is the shared triangle height ``h``. The frame,
+    the extrusion and the sampling recipe are the hole modules', imported.
 ``dataset``
     The on-disk contract: ``.npz`` files, split, parameter table, manifest.
-``make_plate_hole``
-    The command line that ties them together::
+``preview``
+    The preview figure of a written dataset, shared by the ``make_*`` scripts.
+``make_plate_hole``, ``make_plate_tri``
+    The command lines that tie them together::
 
         uv run python -m datagen.make_plate_hole --dim 2
+        uv run python -m datagen.make_plate_tri --dim 2
 """

@@ -78,15 +78,20 @@ code/                        <- VS Code workspace root
 ├── datagen/                TRAINING DATA — writes data/, imports no structsept
 │   ├── plate_hole_params.py     admissible (x_c, y_c, r) design space; r-only family
 │   ├── plate_hole_sdf.py        exact 2-D/3-D SDF of the plate + its samples
+│   ├── plate_tri_params.py      four triangular holes: admissible heights h
+│   ├── plate_tri_sdf.py         exact SDF of that plate; frame/extrusion reused
 │   ├── dataset.py               the on-disk contract: npz, split, params, manifest
-│   └── make_plate_hole.py       CLI: parameters -> samples -> data/
+│   ├── preview.py               preview.png of a written dataset (any family)
+│   ├── make_plate_hole.py       CLI: parameters -> samples -> data/
+│   └── make_plate_tri.py        CLI, same shape, for the triangle family
 │
 ├── experiments/            RUNNABLE ONE-OFFS — never imported by anything
 │   ├── plate_geometry.py            lattice plate, geometry only
 │   ├── plate_with_hole_network.py   the plate driven by the trained decoder
 │   ├── plate_with_hole_stiffness.py the plate taken to the stiffness matrix K
 │   ├── pointcloud_to_lattice.py     point cloud in, latent field out
-│   ├── make_plate_presets.py        writes the two plate training presets into runs/
+│   ├── make_plate_presets.py        writes the plate training presets into runs/
+│   ├── train_plate_*.py             unattended training runs (log + pid in outputs/logs)
 │   ├── IDEIAS.md                    Portuguese notebook: queue + findings
 │   └── outputs/                     what those four scripts write (gitignored)
 │
@@ -150,6 +155,7 @@ uv run python -m structsept.plate_with_hole --hole-radius 0.3
 uv run python -m datagen.plate_hole_params --n 128 --margin 0.05 --plot
 uv run python -m datagen.make_plate_hole --dim 2 --plot                 # centre and radius vary
 uv run python -m datagen.make_plate_hole --dim 2 --radius-only --plot   # centred hole, radius only
+uv run python -m datagen.make_plate_tri --dim 2 --plot                  # four triangles, height only
 
 # the GUI: explorer (Explore + Train)
 uv run python -m structsept.app.main
