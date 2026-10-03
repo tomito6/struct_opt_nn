@@ -1,0 +1,1197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Struct_Sept code board</title>
+<!--
+  Struct_Sept code board: an interactive, Miro-style map of the repository.
+
+  Open it straight from disk (double-click, or drag into a browser). Nothing is
+  downloaded; the whole board is this one file. File links open VS Code at the
+  right line when the file sits at docs/handbook/board.html inside the clone.
+
+  Layout of this file:
+    1. <style>   the look (tokens for light and dark at the top)
+    2. BOARD     the content: frames, cards, arrows, tour  <- edit this to update
+    3. engine    pan / zoom / drag / panel / tour / search / minimap
+-->
+<style>
+:root {
+  --bg: #f1f1ee; --dot: #d3d3cc; --frame: #ffffff; --frame-line: #dcdcd5;
+  --card: #ffffff; --card-line: #e2e2dc; --ink: #1d2126; --muted: #5d6570;
+  --shadow: 0 1px 2px rgba(20,24,30,.06), 0 4px 14px rgba(20,24,30,.07);
+  --chrome: rgba(255,255,255,.92); --chrome-line: #dedfd9; --accent: #2f6fdf;
+  --label-bg: #ffffff; --sticky: #fff1a1; --sticky-ink: #3b3300; --code-bg: #f3f4f6;
+  --k-concept: #7a4ddb; --k-module: #2f6fdf; --k-symbol: #0e9384; --k-data: #d97b00;
+  --k-cmd: #2c3440; --k-ui: #d1437a; --k-external: #7d838c; --k-step: #2e9a4e;
+  --e-flow: #39414d; --e-import: #2f6fdf; --e-disk: #d97b00; --e-grad: #d6336c;
+  --e-uses: #9aa0a8; --e-calls: #0e9384;
+  --dim: .16;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171c; --dot: #2a2e37; --frame: #1c1f26; --frame-line: #2d323c;
+    --card: #242932; --card-line: #333a46; --ink: #e5e8ec; --muted: #9ba4af;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.35);
+    --chrome: rgba(28,31,38,.94); --chrome-line: #323844; --accent: #6b9cff;
+    --label-bg: #1c1f26; --sticky: #5c5320; --sticky-ink: #fff6c2; --code-bg: #2b313b;
+    --k-concept: #a98bff; --k-module: #6b9cff; --k-symbol: #2fc2b0; --k-data: #f0a43a;
+    --k-cmd: #c3cbd6; --k-ui: #f07aa8; --k-external: #a3a9b2; --k-step: #5cc97b;
+    --e-flow: #b4bcc8; --e-import: #6b9cff; --e-disk: #f0a43a; --e-grad: #ff6b9a;
+    --e-uses: #6d747e; --e-calls: #2fc2b0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15171c; --dot: #2a2e37; --frame: #1c1f26; --frame-line: #2d323c;
+  --card: #242932; --card-line: #333a46; --ink: #e5e8ec; --muted: #9ba4af;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.35);
+  --chrome: rgba(28,31,38,.94); --chrome-line: #323844; --accent: #6b9cff;
+  --label-bg: #1c1f26; --sticky: #5c5320; --sticky-ink: #fff6c2; --code-bg: #2b313b;
+  --k-concept: #a98bff; --k-module: #6b9cff; --k-symbol: #2fc2b0; --k-data: #f0a43a;
+  --k-cmd: #c3cbd6; --k-ui: #f07aa8; --k-external: #a3a9b2; --k-step: #5cc97b;
+  --e-flow: #b4bcc8; --e-import: #6b9cff; --e-disk: #f0a43a; --e-grad: #ff6b9a;
+  --e-uses: #6d747e; --e-calls: #2fc2b0;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 14px/1.4 "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+code, .mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: .92em; }
+button { font: inherit; color: inherit; }
+
+/* ---------- canvas ---------- */
+#viewport {
+  position: fixed; inset: 0; overflow: hidden; cursor: grab; touch-action: none;
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--dot) 1.1px, transparent 1.2px);
+  background-size: 22px 22px;
+}
+#viewport.panning { cursor: grabbing; }
+#world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+#edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+#labels, #nodes, #frames { position: absolute; left: 0; top: 0; }
+
+/* ---------- frames ---------- */
+.frame {
+  position: absolute; background: var(--frame); border: 1px solid var(--frame-line);
+  border-radius: 10px; box-shadow: var(--shadow);
+}
+.frame-title {
+  position: absolute; left: 0; bottom: 100%; padding-bottom: 8px; white-space: nowrap;
+  transform: scale(var(--inv, 1)); transform-origin: 0 100%; pointer-events: auto; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.far .frame-title .s { display: none; }
+.frame-title .num {
+  display: inline-block; min-width: 26px; height: 26px; line-height: 26px; text-align: center;
+  border-radius: 7px; color: #fff; font-weight: 700; font-size: 14px; margin-right: 8px; vertical-align: middle;
+}
+.frame-title .t { font-size: 20px; font-weight: 700; vertical-align: middle; }
+.frame-title .s { font-size: 13px; color: var(--muted); margin-left: 10px; vertical-align: middle; }
+
+/* ---------- cards ---------- */
+.node {
+  position: absolute; background: var(--card); border: 1px solid var(--card-line);
+  border-left: 4px solid var(--kc, var(--k-module)); border-radius: 8px; box-shadow: var(--shadow);
+  padding: 9px 12px 10px; cursor: pointer; user-select: none; transition: opacity .15s, box-shadow .15s;
+}
+.node:hover { box-shadow: 0 0 0 2px var(--kc), var(--shadow); }
+.node.sel { box-shadow: 0 0 0 3px var(--kc), var(--shadow); }
+.node .kick { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--kc); margin-bottom: 2px; }
+.node .ttl { font-size: 14.5px; font-weight: 650; line-height: 1.25; }
+.node .sub { font-size: 12.3px; color: var(--muted); margin-top: 4px; }
+.node .sub code, .node .ttl code { background: var(--code-bg); padding: 0 3px; border-radius: 3px; }
+.node .file { margin-top: 6px; font-size: 11px; color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .more { position: absolute; right: 7px; top: 6px; font-size: 11px; color: var(--muted); opacity: .7; }
+.k-concept  { --kc: var(--k-concept); }
+.k-module   { --kc: var(--k-module); }
+.k-symbol   { --kc: var(--k-symbol); }
+.k-data     { --kc: var(--k-data); }
+.k-cmd      { --kc: var(--k-cmd); }
+.k-ui       { --kc: var(--k-ui); }
+.k-external { --kc: var(--k-external); }
+.k-step     { --kc: var(--k-step); }
+.node.k-data { border-radius: 8px 16px 8px 8px; }
+.node.k-cmd { background: #1f252d; border-color: #1f252d; border-left-color: #59d18a; color: #e8edf2; }
+.node.k-cmd .kick { color: #59d18a; }
+.node.k-cmd .ttl { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; font-weight: 500; overflow-wrap: anywhere; }
+.node.k-cmd .sub { color: #a9b4bf; }
+.node.k-cmd .tok { white-space: nowrap; }
+#panel .p-copy { margin: 0 0 12px; }
+#panel .p-copy pre { background: #1f252d; color: #e8edf2; padding: 9px 10px; border-radius: 7px; white-space: pre-wrap; font-size: 12px; margin: 0 0 6px; }
+.node.k-external { border-style: dashed; border-left-style: solid; }
+.node.k-step .ttl::before {
+  content: attr(data-num); display: inline-block; width: 22px; height: 22px; line-height: 22px; border-radius: 50%;
+  background: var(--k-step); color: #fff; text-align: center; font-size: 12px; font-weight: 700; margin-right: 7px;
+}
+.node.sticky {
+  background: var(--sticky); color: var(--sticky-ink); border: none; border-radius: 2px;
+  box-shadow: 0 2px 3px rgba(0,0,0,.08), 0 8px 16px rgba(0,0,0,.08); padding: 12px 14px; transform: rotate(var(--rot, -1deg));
+}
+.node.sticky .kick { color: inherit; opacity: .7; }
+.node.sticky .sub { color: inherit; opacity: .9; font-size: 12.8px; }
+.node.sticky:hover, .node.sticky.sel { box-shadow: 0 0 0 2px #c9a400, 0 8px 16px rgba(0,0,0,.1); }
+.node.text { background: transparent; border: none; box-shadow: none; padding: 0; cursor: default; }
+.node.text .ttl { font-size: 22px; font-weight: 700; }
+.node.text .sub { font-size: 14.5px; color: var(--ink); opacity: .85; line-height: 1.5; }
+.node.text:hover { box-shadow: none; }
+.node.image { padding: 6px; border-left-width: 1px; }
+.node.image img { display: block; width: 100%; border-radius: 4px; }
+.node.image .ttl { font-size: 12px; font-weight: 600; margin-top: 4px; color: var(--muted); }
+
+/* ---------- edges ---------- */
+#edges path.edge { fill: none; stroke-width: 2; transition: opacity .15s; }
+#edges path.hit { fill: none; stroke: transparent; stroke-width: 12; }
+.e-flow   { stroke: var(--e-flow); }
+.e-import { stroke: var(--e-import); stroke-dasharray: 7 5; }
+.e-disk   { stroke: var(--e-disk); }
+.e-grad   { stroke: var(--e-grad); stroke-dasharray: 8 6; animation: march 1.1s linear infinite; stroke-width: 2.4 !important; }
+.e-uses   { stroke: var(--e-uses); stroke-dasharray: 2 4; }
+.e-calls  { stroke: var(--e-calls); }
+@keyframes march { to { stroke-dashoffset: 28; } }
+@media (prefers-reduced-motion: reduce) { .e-grad { animation: none; } }
+.elabel {
+  position: absolute; transform: translate(-50%, -50%); background: var(--label-bg); color: var(--muted);
+  border: 1px solid var(--card-line); border-radius: 10px; padding: 1px 8px; font-size: 11.5px;
+  white-space: nowrap; transition: opacity .15s; pointer-events: none; max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+}
+.elabel.l-grad { color: var(--e-grad); border-color: var(--e-grad); }
+.elabel.l-disk { color: var(--e-disk); }
+.elabel.l-import { color: var(--e-import); }
+
+/* focus / dim */
+.dimmed .node:not(.hl), .dimmed .elabel:not(.hl), .dimmed #edges path.edge:not(.hl) { opacity: var(--dim); }
+#edges path.edge.hl { stroke-width: 3; }
+.far .node .sub, .far .node .file, .far .elabel, .far .node .kick { display: none; }
+.far .node .ttl { font-size: 18px; }
+.very-far .node { opacity: .9; }
+
+/* ---------- chrome ---------- */
+.chrome { position: fixed; background: var(--chrome); border: 1px solid var(--chrome-line); border-radius: 12px; box-shadow: var(--shadow); backdrop-filter: blur(8px); z-index: 10; }
+#topbar { top: 12px; left: 12px; right: 12px; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 12px; }
+#topbar .brand { font-weight: 750; font-size: 16px; white-space: nowrap; }
+#topbar .brand small { font-weight: 500; color: var(--muted); font-size: 12.5px; margin-left: 8px; }
+#topbar .spacer { flex: 1; }
+.btn { border: 1px solid var(--chrome-line); background: var(--card); border-radius: 8px; padding: 6px 11px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+#search { width: 220px; border: 1px solid var(--chrome-line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 7px 10px; font: inherit; }
+#search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#searchinfo { font-size: 12px; color: var(--muted); min-width: 64px; }
+#zoomlbl { font-size: 12px; color: var(--muted); width: 44px; text-align: right; }
+
+#sidebar { top: 76px; left: 12px; width: 250px; max-height: calc(100% - 250px); overflow: auto; padding: 10px 8px; }
+#sidebar h4 { margin: 2px 8px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+#sidebar a { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 7px; color: inherit; text-decoration: none; cursor: pointer; font-size: 13.2px; line-height: 1.3; }
+#sidebar a:hover { background: var(--code-bg); }
+#sidebar a.active { background: var(--code-bg); font-weight: 650; }
+#sidebar a .num { flex: none; width: 20px; height: 20px; line-height: 20px; border-radius: 5px; color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
+
+#legend { left: 12px; bottom: 12px; width: 250px; padding: 10px 12px; font-size: 12px; }
+#legend h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); display: flex; justify-content: space-between; cursor: pointer; }
+#legend .row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+#legend .sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+#legend svg { flex: none; }
+#legend.collapsed .body { display: none; }
+
+#minimap { right: 12px; bottom: 12px; width: 230px; height: 150px; padding: 0; overflow: hidden; cursor: pointer; }
+#minimap canvas { width: 100%; height: 100%; display: block; }
+
+#panel {
+  top: 76px; right: 12px; bottom: 174px; width: 420px; padding: 16px 18px 18px; overflow: auto; transform: translateX(110%);
+  transition: transform .22s ease; z-index: 12;
+}
+#panel.open { transform: none; }
+#panel .close { position: absolute; right: 10px; top: 8px; border: none; background: none; font-size: 22px; cursor: pointer; color: var(--muted); }
+#panel .p-kind { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--kc); }
+#panel h2 { margin: 3px 28px 4px 0; font-size: 19px; line-height: 1.25; }
+#panel .p-frame { font-size: 12px; color: var(--muted); margin-bottom: 10px; cursor: pointer; }
+#panel .p-sub { color: var(--muted); margin-bottom: 10px; }
+#panel .p-body { font-size: 13.6px; line-height: 1.55; }
+#panel .p-body p { margin: 0 0 9px; }
+#panel .p-body ul, #panel .p-body ol { margin: 0 0 9px; padding-left: 20px; }
+#panel .p-body li { margin: 2px 0; }
+#panel .p-body code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+#panel .p-body pre { background: var(--code-bg); padding: 9px 10px; border-radius: 7px; overflow: auto; font-size: 12px; line-height: 1.45; margin: 0 0 10px; }
+#panel .p-body pre code { background: none; padding: 0; }
+#panel .p-body table { border-collapse: collapse; font-size: 12.5px; margin: 0 0 10px; width: 100%; }
+#panel .p-body td, #panel .p-body th { border-bottom: 1px solid var(--card-line); padding: 3px 6px 3px 0; text-align: left; vertical-align: top; }
+#panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 16px 0 6px; }
+#panel ul.p-files, #panel ul.p-links { list-style: none; margin: 0; padding: 0; }
+#panel ul.p-files li { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--card-line); font-size: 12.5px; }
+#panel ul.p-files li .path { flex: 1; font-family: "Cascadia Code", Consolas, monospace; font-size: 11.8px; word-break: break-all; }
+#panel ul.p-files li .lbl { color: var(--muted); font-family: inherit; display: block; font-size: 11.5px; }
+#panel ul.p-files a, #panel ul.p-files button { font-size: 11.5px; border: 1px solid var(--chrome-line); border-radius: 6px; padding: 2px 7px; background: var(--card); color: var(--accent); text-decoration: none; cursor: pointer; white-space: nowrap; }
+#panel ul.p-links li { padding: 4px 0; font-size: 13px; cursor: pointer; display: flex; gap: 6px; align-items: baseline; }
+#panel ul.p-links li:hover .nm { text-decoration: underline; }
+#panel ul.p-links .dir { color: var(--muted); font-size: 11.5px; width: 16px; flex: none; }
+#panel ul.p-links .el { color: var(--muted); font-size: 12px; }
+
+#tourbar {
+  left: 50%; bottom: 12px; transform: translateX(-50%); width: min(720px, calc(100% - 520px)); min-width: 380px;
+  padding: 12px 16px; display: none; z-index: 13;
+}
+#tourbar.on { display: block; }
+#tourbar .tstep { font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: .08em; text-transform: uppercase; }
+#tourbar .ttitle { font-size: 16px; font-weight: 700; margin: 2px 0 4px; }
+#tourbar .ttext { font-size: 13.5px; line-height: 1.5; }
+#tourbar .ttext code { background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
+#tourbar .tnav { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; align-items: center; }
+#tourbar .tnav .hint { flex: 1; font-size: 11.5px; color: var(--muted); }
+
+#help { inset: 0; margin: auto; width: min(620px, calc(100% - 32px)); height: max-content; max-height: calc(100% - 40px); overflow: auto; padding: 22px 26px; display: none; z-index: 20; }
+#help.on { display: block; }
+#help h2 { margin: 0 0 8px; }
+#help table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+#help td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--card-line); vertical-align: top; }
+#help kbd { font-family: inherit; font-size: 12px; border: 1px solid var(--chrome-line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; background: var(--card); }
+
+body.export .chrome { display: none !important; }
+body.export #viewport { background-image: none; }
+
+@media (max-width: 900px) {
+  #sidebar { display: none; }
+  #sidebar.force { display: block; }
+  #panel { width: calc(100% - 24px); top: auto; height: 55%; bottom: 12px; }
+  #legend, #minimap { display: none; }
+  #search { width: 120px; }
+  #topbar .brand small, #zoomlbl { display: none; }
+  #tourbar { width: calc(100% - 24px); min-width: 0; }
+}
+</style>
+</head>
+<body>
+<div id="viewport"><div id="world"><div id="frames"></div><svg id="edges" xmlns="http://www.w3.org/2000/svg"><defs id="markers"></defs></svg><div id="labels"></div><div id="nodes"></div></div></div>
+
+<header id="topbar" class="chrome">
+  <button class="btn" id="btn-frames" title="Frames list">&#9776;</button>
+  <div class="brand">Struct_Sept <small>code board</small></div>
+  <div class="spacer"></div>
+  <input id="search" type="search" placeholder="Search cards  ( / )" autocomplete="off">
+  <span id="searchinfo"></span>
+  <button class="btn primary" id="btn-tour" title="Guided tour (T)">&#9654; Tour</button>
+  <button class="btn" id="btn-fit" title="Show everything (0)">Fit</button>
+  <span id="zoomlbl">100%</span>
+  <button class="btn" id="btn-theme" title="Light / dark">&#9681;</button>
+  <button class="btn" id="btn-reset" title="Undo card moves">Reset layout</button>
+  <button class="btn" id="btn-help" title="Help (?)">?</button>
+</header>
+
+<nav id="sidebar" class="chrome"><h4>Frames</h4><div id="framelist"></div></nav>
+
+<div id="legend" class="chrome">
+  <h4 id="legend-h"><span>Legend</span><span id="legend-t">&#8211;</span></h4>
+  <div class="body" id="legend-body"></div>
+</div>
+<div id="minimap" class="chrome"><canvas id="mm"></canvas></div>
+
+<aside id="panel" class="chrome" aria-live="polite">
+  <button class="close" id="panel-close" title="Close (Esc)">&times;</button>
+  <div class="p-kind" id="p-kind"></div>
+  <h2 id="p-title"></h2>
+  <div class="p-frame" id="p-frame"></div>
+  <div class="p-sub" id="p-sub"></div>
+  <div class="p-body" id="p-body"></div>
+  <div id="p-files-wrap"><h3>Files</h3><ul class="p-files" id="p-files"></ul></div>
+  <div id="p-links-wrap"><h3>Connections</h3><ul class="p-links" id="p-links"></ul></div>
+</aside>
+
+<div id="tourbar" class="chrome">
+  <div class="tstep" id="t-step"></div>
+  <div class="ttitle" id="t-title"></div>
+  <div class="ttext" id="t-text"></div>
+  <div class="tnav"><span class="hint">&larr; / &rarr; to move, Esc to leave. Cards stay clickable.</span>
+    <button class="btn" id="t-prev">Back</button><button class="btn primary" id="t-next">Next</button><button class="btn" id="t-close">Close</button></div>
+</div>
+
+<div id="help" class="chrome">
+  <h2>How to use this board</h2>
+  <p>The board is a map of the repository, laid out like a Miro board: numbered <b>frames</b>
+  (read them in order), <b>cards</b> inside them, and <b>arrows</b> between cards.
+  Click any card for its explanation, the files behind it (with a button that opens VS Code at the
+  line) and everything it connects to. New here? Press <b>Tour</b>.</p>
+  <table>
+    <tr><td><kbd>drag</kbd> background</td><td>pan</td></tr>
+    <tr><td><kbd>wheel</kbd> / pinch</td><td>zoom around the pointer</td></tr>
+    <tr><td><kbd>drag</kbd> a card</td><td>move it (remembered in this browser; <i>Reset layout</i> undoes)</td></tr>
+    <tr><td><kbd>click</kbd> a card</td><td>details panel; neighbours highlighted</td></tr>
+    <tr><td><kbd>1</kbd> &hellip; <kbd>9</kbd></td><td>jump to frame 1&ndash;9 (<kbd>Shift</kbd>+digit: frames 10+)</td></tr>
+    <tr><td><kbd>0</kbd></td><td>fit the whole board</td></tr>
+    <tr><td><kbd>T</kbd></td><td>guided tour (<kbd>&larr;</kbd> <kbd>&rarr;</kbd> to step)</td></tr>
+    <tr><td><kbd>/</kbd></td><td>search; <kbd>Enter</kbd> jumps to the next match</td></tr>
+    <tr><td><kbd>+</kbd> <kbd>-</kbd> &nbsp; arrows</td><td>zoom &nbsp;/&nbsp; pan</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>close panel, tour, search, help</td></tr>
+  </table>
+  <p style="margin-top:12px;color:var(--muted);font-size:12.5px">Companion to <code>docs/handbook/handbook.pdf</code>.
+  The content lives in the <code>BOARD</code> object inside this file.</p>
+  <div style="text-align:right"><button class="btn primary" id="help-close">Got it</button></div>
+</div>
+
+<script>
+/* =====================================================================
+   BOARD CONTENT
+   Frames: {id, title, sub, x, y, color}         (x, y = top-left of the frame's content)
+   Cards:  N(id, frame, x, y, kind, title, sub, opts)   x, y relative to the frame
+           kind: concept | module | symbol | data | cmd | ui | external | step | sticky | text | image
+           opts: {w, body (HTML for the panel), files: [[path, line, label]], kicker, num, src, rot}
+   Arrows: E(from, to, label, kind, opts)   kind: flow | import | disk | grad | uses | calls
+           opts: {fs, ts: 'l'|'r'|'t'|'b' (force sides), curve: px, both: true}
+   Tour:   {title, text, frame | focus: [card ids]}
+   ===================================================================== */
+const BOARD = (() => {
+  const frames = [], nodes = [], edges = [], tour = [];
+  const F = (id, title, sub, x, y, color) => frames.push({ id, title, sub, x, y, color });
+  const N = (id, frame, x, y, kind, title, sub, o = {}) => nodes.push({ id, frame, x, y, kind, title, sub, ...o });
+  const E = (from, to, label, kind = 'flow', o = {}) => edges.push({ from, to, label, kind, ...o });
+  const T = (title, text, o = {}) => tour.push({ title, text, ...o });
+
+  /* BOARD-DATA-START */
+  /* ---------- 1 Start here ---------- */
+  F('start', 'Start here', 'what this board is', 0, 0, '#2f6fdf');
+  N('intro', 'start', 0, 0, 'text', 'Struct_Sept on one board', 'Structural optimisation of lattice structures whose geometry is a neural network (Kofler, Giritsch, Elgeti 2025). Read the numbered frames in order, click a card for details and file links, or press <b>Tour</b>.', { w: 520 });
+  N('howread', 'start', 580, 0, 'sticky', 'How to read', 'Boxes are things in the code, arrows are what flows between them. Colour = kind (legend, bottom left). Click a card: explanation + a VS Code button.', { w: 260 });
+  N('cmd-gui', 'start', 0, 190, 'cmd', 'uv run python -m structsept.app.main', 'open the GUI: Explore, Explore 2-D, Train', { w: 320 });
+  N('cmd-test', 'start', 0, 300, 'cmd', 'uv run pytest tests/ -v', 'offline tests', { w: 320 });
+  N('rules', 'start', 380, 190, 'sticky', 'Three rules', '1) always <code>uv run</code>, never bare python. 2) between design variables and objective everything stays in torch: no .detach(), numpy round trips or .item(). 3) experiments/ imports structsept/, never the reverse.', { w: 300, rot: 1 });
+  N('pdf', 'start', 720, 190, 'data', 'handbook.pdf', 'the long-form companion in this folder (docs/handbook/)', { w: 220 });
+
+  /* ---------- 2 The method ---------- */
+  F('method', 'The method in one picture', 'paper steps 1-6', 1300, 0, '#7a4ddb');
+  N('s1', 'method', 0, 0, 'step', 'Training data', 'sample signed distances φ around many shapes', { num: 1, w: 240, files: [['datagen/make_plate_hole.py', 298, 'main'], ['datagen/make_plate_tri.py', 274, 'main']],
+    body: `<p>Offline step 1. For every shape of a family, sample points in the [−1, 1]<sup>d</sup> box and store their exact signed distance φ (negative inside the material).</p><p>Here the families are parametric 2-D plates computed analytically by <code>datagen/</code>, no meshes involved; the GUI's SDF maker does the same from a folder of meshes. The result lands in <code>data/</code>, which is all the trainer ever sees.</p>` });
+  N('s2', 'method', 0, 180, 'step', 'Train the decoder f<sub>θ</sub>(λ, x)', 'auto-decoder: one learned code λ per shape, no encoder', { num: 2, w: 240, files: [['DeepSDFStruct/DeepSDFStruct/deep_sdf/training.py', 299, 'train_deep_sdf'], ['structsept/app/training.py', 129, 'train (the app wrapper)']],
+    body: `<p>Offline step 2. DeepSDF is an <i>auto-decoder</i>: every training shape owns a latent code λ (one row of an <code>nn.Embedding</code>) that is optimised together with the MLP weights θ. There is no encoder.</p><p>Afterwards f<sub>θ</sub>(λ, x) is the SDF of "shape λ" at x, and nearby codes give similar shapes, which is what makes λ usable as a design variable. Started from the Train tab or <code>experiments/train_plate_*.py</code>, both through <code>structsept.app.training.train</code>.</p>` });
+  N('s3', 'method', 340, 0, 'step', 'Network inputs', 'control points λ̂ → B-spline field λ(x); T(x) tiles the unit cell', { num: 3, w: 240, files: [['DeepSDFStruct/DeepSDFStruct/lattice_structure.py', 39, 'LatticeSDFStruct'], ['DeepSDFStruct/DeepSDFStruct/parametrization.py', 133, 'SplineParametrization']],
+    body: `<p>Online step 3. A B-spline maps every point x of the domain to a latent vector λ(x), so the unit cell can change smoothly across the part; its control points λ̂ are the design variables.</p><p>T(x) folds x into the decoder's [−1, 1] frame once per tile. <code>LatticeSDFStruct</code> does both: it evaluates the parametrization at each query point and hands the folded coordinates to the decoder.</p>` });
+  N('s4', 'method', 660, 0, 'step', 'Mesh', 'FlexiCubes surface → FFD → tetrahedra', { num: 4, w: 240, files: [['DeepSDFStruct/DeepSDFStruct/mesh.py', 669, 'create_3D_mesh'], ['DeepSDFStruct/DeepSDFStruct/torch_spline.py', 275, 'TorchSpline (FFD)']],
+    body: `<p>Online step 4. <code>create_3D_mesh</code> samples the SDF on a grid (resolution scaled by the tiling) and extracts the surface with FlexiCubes, a differentiable dual marching cubes; the FFD spline (<code>TorchSpline</code>) then maps the vertices from parameter space onto the physical part.</p><p>Two routes to tetrahedra: FlexiCubes' own tets (<code>mesh_type="volume"</code>, used by the library test) or the surface handed to tetgen (<code>structsept/fem.py</code>, because the first route loses about 30 % of the volume).</p>` });
+  N('s5', 'method', 980, 0, 'step', 'FEM', 'torch-fem: K u = f, compliance J, volume V', { num: 5, w: 240, files: [['structsept/fem.py', 197, 'assemble_stiffness (stops at K)'], ['DeepSDFStruct/tests/test_structural_optimization.py', 148, 'cantilever.solve (the full step)']],
+    body: `<p>Online step 5. Full-scale linear elasticity on the tetrahedral mesh with torch-fem: no homogenisation, no scale separation, no periodicity. Solve K u = f; the compliance J = f·u is the objective and the volume V the constraint.</p><p>FEM runs every iteration, so it is the cost bottleneck. <code>structsept/fem.py</code> builds K and stops (no BCs, loads or solve); the complete step, with a cantilever load case, is in the library's template test.</p>` });
+  N('s6', 'method', 980, 200, 'step', 'MMA update', 'move λ̂ inside its bounds using dJ/dλ̂ and dV/dλ̂', { num: 6, w: 240, files: [['DeepSDFStruct/DeepSDFStruct/optimization.py', 170, 'MMA'], ['DeepSDFStruct/DeepSDFStruct/optimization.py', 349, 'MMA.step']],
+    body: `<p>Online step 6. dJ/dλ̂ and dV/dλ̂ come from autodiff through FEM, mesh and decoder; MMA (Svanberg's Method of Moving Asymptotes) turns them into a new λ̂ inside box bounds.</p><p>Only the latent control points are design variables, never the FFD control points. The bounds matter: outside the trained latent range ([0.15, 0.75] in the tests) the decoder produces meaningless geometry.</p>` });
+  N('dv', 'method', 500, 220, 'concept', 'λ̂ = the design variables', 'spline control points of the latent field; their number is independent of the number of cells', { w: 270, files: [['DeepSDFStruct/DeepSDFStruct/parametrization.py', 133, 'SplineParametrization']],
+    body: `<p>All control points of the latent spline, shape (number of control points, d), where d is the latent dimension of the decoder. This tensor is what MMA moves.</p><p>Because λ(x) is one spline over the whole domain, design resolution and lattice resolution are decoupled: the template test has 2×1×1 cells and 15 control points.</p>` });
+  N('where', 'method', 0, 380, 'sticky', 'Where each step lives', '1-2: this repo (datagen/, Train tab, train scripts), the main activity today. 3-4: library + Explore tab. 5: structsept/fem.py stops at K. 6: only in DeepSDFStruct/tests/test_structural_optimization.py.', { w: 380 });
+  N('eqT', 'method', 440, 400, 'concept', 'T(x) = 4|t·x/2 − ⌊t·x/2 + ½⌋| − 1', 'triangle wave: neighbouring cells are mirror images, so the field stays continuous even for asymmetric cells', { w: 300, files: [['DeepSDFStruct/DeepSDFStruct/lattice_structure.py', 262, 'transform']],
+    body: `<p>Eq. (18) of the paper, coded as <code>lattice_structure.transform</code>: x is first normalised to [0, 1] over the domain, t is the number of tiles along that axis, and the result lies in [−1, 1], the frame the decoder was trained on.</p><p>A triangle wave and not a sawtooth: every second cell is mirrored, so neighbouring cells meet face to face and the geometry stays continuous even when the unit cell is not symmetric.</p>` });
+  N('eqL', 'method', 780, 400, 'concept', 'λ(x) = Σ<sub>i</sub> φ<sub>i</sub>(x) λ̂<sub>i</sub>', 'B-spline with local support: one control point only changes its neighbourhood', { w: 300, files: [['DeepSDFStruct/DeepSDFStruct/parametrization.py', 133, 'SplineParametrization'], ['DeepSDFStruct/DeepSDFStruct/torch_spline.py', 275, 'TorchSpline']],
+    body: `<p>φ<sub>i</sub> are B-spline basis functions, λ̂<sub>i</sub> the control points. Each φ<sub>i</sub> is non-zero over a few knot spans only, so moving one control point changes the lattice only nearby.</p><p><code>SplineParametrization</code> implements it by wrapping a splinepy spline in a differentiable <code>TorchSpline</code>, so gradients reach the control points.</p>` });
+  E('s1', 's2', 'npz samples'); E('s2', 's3', 'trained f<sub>θ</sub>'); E('s3', 's4', 'SDF on a grid'); E('s4', 's5', 'tets');
+  E('s5', 's6', 'J, V, gradients'); E('s6', 'dv', 'new values'); E('dv', 's3', 'feeds');
+  E('s5', 's3', 'dJ/dλ̂ by autodiff', 'grad', { fs: 't', ts: 't', k: 95 });
+
+  /* ---------- 3 Repository map ---------- */
+  F('repo', 'Repository map', 'folders and the one rule', 2960, 0, '#0e9384');
+  N('p-exp', 'repo', 0, 0, 'module', 'experiments/', 'runnable one-offs: figures, meshes, training runs. Never imported.', { w: 250, files: [['experiments/IDEIAS.md', 1, 'the lab notebook']],
+    body: `<p>Scripts you run, never import: the geometry figures, the stiffness demo, the point-cloud fit, the headless training scripts and the preset writer, plus <code>IDEIAS.md</code>, the lab notebook.</p><p>Outputs go to <code>experiments/outputs/</code> or <code>runs/</code>. When a second caller needs a helper from here, it moves into <code>structsept/</code>; that is how <code>structsept/app/unattended.py</code> came about.</p>` });
+  N('p-ss', 'repo', 0, 190, 'module', 'structsept/', 'project library: plate_with_hole, fem, pointcloud_sdf + the GUI in app/', { w: 250, files: [['structsept/__init__.py', 1, ''], ['structsept/plate_with_hole.py', 83, 'plate_with_hole'], ['structsept/fem.py', 98, 'tetrahedral_mesh'], ['structsept/pointcloud_sdf.py', 216, 'PointCloudSDF']],
+    body: `<p>This project's importable library (editable install, no sys.path hacks):</p><ul><li><code>plate_with_hole.py</code>: the recurring lattice test geometry</li><li><code>fem.py</code>: tetrahedra and the global stiffness K</li><li><code>pointcloud_sdf.py</code>: an SDF from an unoriented point cloud</li><li><code>app/</code>: the Tkinter GUI and the headless-training helpers</li></ul>` });
+  N('p-dsdf', 'repo', 0, 380, 'external', 'DeepSDFStruct/ (submodule)', 'the library behind the paper: SDFs, lattice, FlexiCubes, trainer, MMA', { w: 250, files: [['DeepSDFStruct/DeepSDFStruct/__init__.py', 1, 'package overview'], ['DeepSDFStruct/tests/test_structural_optimization.py', 21, 'the template test']],
+    body: `<p>Michael Kofler's library (github.com/mkofler96/DeepSDFStruct), pulled in as a git submodule: SDF primitives and booleans, <code>LatticeSDFStruct</code>, parametrizations, FlexiCubes meshing, the DeepSDF trainer, pretrained decoders and MMA.</p><p>Editing files here edits the upstream library, so only do it on purpose. Its <code>tests/</code> show the intended call patterns.</p>` });
+  N('p-dg', 'repo', 400, 0, 'module', 'datagen/', 'parametric training sets with exact SDFs; imports nothing from the rest', { w: 250, files: [['datagen/dataset.py', 55, 'dataset_paths (the contract)']],
+    body: `<p>Builds training sets for parametric 2-D plate families (one circular hole; four triangular holes) with analytically exact signed distances.</p><p>It shares no imports with <code>structsept/</code>: the file layout written by <code>datagen/dataset.py</code> is the only interface, so the Train tab, the scripts and the trainer read the results without importing datagen.</p>` });
+  N('d-data', 'repo', 400, 190, 'data', 'data/', 'SdfSamples/ + splits/ (gitignored)', { w: 250, files: [['datagen/dataset.py', 1, 'the layout (module docstring)']],
+    body: `<p><code>SdfSamples/&lt;dataset&gt;/</code> holds one .npz per shape plus dataset.json, params.csv and previews; <code>splits/&lt;dataset&gt;.json</code> lists the shapes in latent-code order. Both folder names are fixed: the trainer resolves paths from them.</p><p>Gitignored and regenerable; the exact command that built each dataset is stored in its dataset.json.</p>` });
+  N('p-app', 'repo', 400, 380, 'ui', 'structsept/app/', 'Tkinter GUI: Explore, Explore 2-D, Train, SDF maker', { w: 250, files: [['structsept/app/main.py', 53, 'build_app'], ['structsept/app/sdf_maker.py', 257, 'build_app (SDF maker)']],
+    body: `<p>Two windows: the explorer (<code>main.py</code>: Explore, Explore 2-D, Train) and the standalone SDF maker (<code>sdf_maker.py</code>: meshes → dataset). Also here: <code>hyperparams.py</code> (the specs.json schema), <code>training.py</code>, <code>unattended.py</code> for headless runs and the desktop <code>launcher.py</code>.</p><p>Only the Tk thread touches widgets; slow work runs on worker threads.</p>` });
+  N('d-runs', 'repo', 780, 380, 'data', 'runs/', 'trained decoders + presets (gitignored)', { w: 230, files: [['structsept/app/main.py', 50, 'RUNS_DIR'], ['structsept/app/training.py', 220, 'list_runs']],
+    body: `<p>One folder per run: <code>specs.json</code> (the full recipe the trainer reads), <code>metadata.json</code> (the app's record), checkpoints and logs. A preset is a run folder holding only specs.json and metadata.json, not trained yet.</p><p>The GUI's run table and decoder pickers list this folder. Gitignored, and specs.json stores absolute paths.</p>` });
+  N('rule', 'repo', 780, 100, 'sticky', 'The one rule', 'experiments → structsept → DeepSDFStruct. When a second caller needs something from experiments/, move it into structsept/.', { w: 260 });
+  E('p-exp', 'p-ss', 'imports', 'import'); E('p-ss', 'p-dsdf', 'imports', 'import');
+  E('p-dg', 'd-data', 'writes', 'disk'); E('d-data', 'p-app', 'reads (Train tab)', 'disk');
+  E('p-app', 'd-runs', 'writes runs', 'disk'); E('p-ss', 'p-app', 'contains', 'uses');
+
+  /* ---------- 4 Daily workflow ---------- */
+  F('flow', 'The daily workflow', 'dataset → decoder → finding', 0, 900, '#2e9a4e');
+  N('w1', 'flow', 0, 0, 'step', 'Build a dataset', 'datagen CLI: shapes → exact φ samples → data/', { num: 1, w: 250, files: [['datagen/make_plate_hole.py', 298, 'main'], ['datagen/make_plate_tri.py', 274, 'main']],
+    body: `<p>Build the family with <code>datagen.make_plate_hole</code> or <code>datagen.make_plate_tri</code>, always with <code>--name</code> and the 25 000 + 25 000 sample counts. <code>--plot</code> adds previews; <code>--dry-run</code> only reports what would be written and its size.</p>` });
+  N('w1c', 'flow', 0, 150, 'cmd', 'uv run python -m datagen.make_plate_hole --dim 2 --name plate_hole_2d_xyr --n-uniform 25000 --n-band 25000 --plot', 'rebuilds the 134-shape free-hole set', { w: 270 });
+  N('w2', 'flow', 340, 0, 'step', 'Pick a recipe', 'a preset in runs/, the supervisor\'s xlsx sheet, or a script\'s HPARAMS', { num: 2, w: 250, files: [['experiments/make_plate_presets.py', 56, 'COMMON (preset recipe)'], ['structsept/app/hyperparams.py', 1426, 'from_sheet']],
+    body: `<p>A recipe is a complete hyperparameter set. Three sources:</p><ul><li>a preset run folder from <code>experiments/make_plate_presets.py</code>, loaded with "All hyperparameters… → Start from"</li><li>the supervisor's sheet in <code>docs/hyperparameters/</code>, "Import sheet…", translated by <code>hyperparams.from_sheet</code></li><li>the <code>HPARAMS</code> dict of a headless script</li></ul>` });
+  N('w3', 'flow', 680, 0, 'step', 'Train', 'GUI Train tab (minutes) or experiments/train_plate_*.py (hours, headless)', { num: 3, w: 250, files: [['structsept/app/tab_train.py', 692, '_start_training'], ['structsept/app/training.py', 129, 'train']],
+    body: `<p>Short runs (the 4×64 presets, 20-50 min measured) fit in the Train tab, which plots the loss from Logs.pth while it runs. Long or chained runs go headless with <code>experiments/train_plate_*.py</code>: logged to a file, waiting for a time or another process, optionally stopped at a deadline.</p><p>Both paths call the same <code>training.train</code>, so a run folder looks the same either way.</p>` });
+  N('w3c', 'flow', 680, 150, 'cmd', 'uv run python experiments/train_plate_tri.py --family hw', 'headless run with log + pid in outputs/logs/', { w: 270 });
+  N('w4', 'flow', 1020, 0, 'step', 'Analyse the codes', 'learned codes vs generating parameters: correlation, affine R², PCA, coverage', { num: 4, w: 250, files: [['structsept/app/unattended.py', 525, 'code_vs_parameter'], ['experiments/train_plate_xyr_4h.py', 261, 'compare_codes_with_params'], ['experiments/train_plate_xyr_n166.py', 160, 'latent_coverage']],
+    body: `<p>The current research question: do the learned codes recover the parameters that generated the shapes? <code>code_vs_parameter</code> joins codes to <code>params.csv</code> by name through the split and reports per-component Pearson / Spearman and monotonicity, the principal axis, and the R² of a linear fit of the parameter on all components.</p><p><code>compare_codes_with_params</code> (xyr_4h) adds the affine fit of three parameters; <code>latent_coverage</code> (n166) measures the widest gap per latent axis.</p>` });
+  N('w5', 'flow', 1360, 0, 'step', 'Look at it', 'Explore 2-D: one slider per latent component + coverage strip', { num: 5, w: 250, files: [['structsept/app/tab_explore2d.py', 345, '_build_sliders'], ['structsept/app/viz.py', 28, 'GAP_FRACTION']],
+    body: `<p>Load the run in Explore 2-D: one slider per latent component, the decoded plate as material / void, the area fraction, and a coverage strip showing where the trained codes lie (a gap wider than 12 % of the range is shaded).</p><p>The learned basis is arbitrary, so one slider is rarely one parameter; the meaningful directions are the linear-fit directions from step 4.</p>` });
+  N('w6', 'flow', 1700, 0, 'step', 'Write it down', 'experiments/IDEIAS.md (Portuguese lab notebook); data/, runs/, outputs/ are gitignored', { num: 6, w: 250, files: [['experiments/IDEIAS.md', 1, '']],
+    body: `<p>Every experiment gets a dated section in <code>experiments/IDEIAS.md</code>: the request, recipe, command, timings and the result with numbers. Since data/, runs/ and outputs/ are not in git, the notebook is the lasting record of what was found.</p>` });
+  N('wtip', 'flow', 1360, 170, 'sticky', 'Before a long run', 'Smoke-test with --epochs 1-2 first; never run two trainings at once (torch is CPU-only here).', { w: 270 });
+  E('w1', 'w2'); E('w2', 'w3'); E('w3', 'w4'); E('w4', 'w5'); E('w5', 'w6');
+  E('w6', 'w1', 'adjust data or d', 'flow', { fs: 't', ts: 't', k: 80 });
+
+  /* ---------- 5 datagen ---------- */
+  F('datagen', 'datagen: training data', 'params → exact SDF → files', 2300, 900, '#d97b00');
+  N('dg-params', 'datagen', 0, 0, 'module', 'plate_hole_params.py / plate_tri_params.py', 'which parameters are legal; Sobol / grid draws + extremes', { w: 260, files: [['datagen/plate_hole_params.py', 141, 'PlateHoleSpace'], ['datagen/plate_hole_params.py', 308, 'PlateHoleSpace.from_unit'], ['datagen/plate_tri_params.py', 192, 'PlateTriSpace']],
+    body: `<p>A hole (x<sub>c</sub>, y<sub>c</sub>, r) is legal when every ligament is at least the margin. That set is a pyramid filling a third of its bounding box, so instead of rejection sampling a unit cube (u<sub>x</sub>, u<sub>y</sub>, t) is mapped onto it and every draw is valid.</p><p><code>sample</code>: Sobol plus extremes, the cube's corners and the largest and smallest centred hole (128 + 6 distinct = 134). <code>sample_radius</code> sweeps r alone; <code>sample_large_holes</code> appends big holes. <code>PlateTriSpace</code> does the same for (h, w) on a trapezoid.</p>` });
+  N('dg-sdf', 'datagen', 340, 0, 'module', 'plate_hole_sdf.py / plate_tri_sdf.py', 'exact φ = max(box, −hole) in the [−1,1]² frame (scale 1.8, pad 0.1); uniform + band samples', { w: 260, files: [['datagen/plate_hole_sdf.py', 434, 'sample_instance'], ['datagen/plate_hole_sdf.py', 100, 'PlateFrame'], ['datagen/plate_tri_sdf.py', 149, 'plate_tri_sdf_2d']],
+    body: `<p>The exact signed distance of one plate, in numpy: the box SDF and the negated hole SDF combined with max(); for the triangles, the hole term is the minimum over four exact triangle distances.</p><p><code>PlateFrame</code> maps the design plate into [−1, 1]<sup>d</sup> with one uniform scale (2·(1 − pad) / longest side), so distances stay true. Each shape gets uniform points in the box plus a band around all boundaries (half of it on the holes), seeded per shape index.</p>` });
+  N('dg-make', 'datagen', 680, 0, 'module', 'make_plate_hole.py / make_plate_tri.py', 'the CLIs; write through dataset.py', { w: 250, files: [['datagen/make_plate_hole.py', 298, 'main'], ['datagen/make_plate_tri.py', 274, 'main']],
+    body: `<p>The command-line entry points. Each draws the parameters, loops over shapes with <code>sample_instance</code>, and writes npz files, split, params.csv and the dataset.json manifest (including the exact command) through <code>dataset.py</code>.</p><p><code>--dim</code> (2 or 3) is required. Family flags: <code>--radius-only</code> and <code>--large-holes N --large-holes-from R</code> for the hole, <code>--free-width</code> for the triangles.</p>` });
+  N('dg-out', 'datagen', 680, 170, 'data', 'SdfSamples/&lt;ds&gt;/plate/*.npz, splits/&lt;ds&gt;.json, params.csv, dataset.json', 'npz holds pos (φ ≥ 0) and neg (φ &lt; 0) rows (x, y, φ)', { w: 280, files: [['datagen/dataset.py', 138, 'write_instance'], ['datagen/dataset.py', 145, 'write_split'], ['datagen/dataset.py', 153, 'write_manifest']],
+    body: `<p>The contract of <code>datagen/dataset.py</code>. Each npz holds float32 arrays <code>pos</code> and <code>neg</code>; the split is <code>{dataset: {plate: [names]}}</code>; params.csv has one row of generating parameters per shape (never shown to the network); dataset.json records frame, sampling and command.</p>` });
+  N('dg-inv', 'datagen', 0, 190, 'sticky', 'Invariant', 'split order = latent code index = params.csv row. Join codes to parameters by name through the split.', { w: 280 });
+  N('dg-names', 'datagen', 330, 190, 'sticky', 'Always pass --name', 'Default names differ from what presets expect; also pass --n-uniform 25000 --n-band 25000. The exact command is in dataset.json.', { w: 280, rot: 1 });
+  E('dg-make', 'dg-params', 'draw parameters', 'calls', { fs: 't', ts: 't', k: 70 }); E('dg-make', 'dg-sdf', 'per shape', 'calls'); E('dg-make', 'dg-out', 'writes', 'disk');
+
+  /* ---------- 6 Training ---------- */
+  F('train', 'Training a decoder', 'GUI and headless', 4100, 900, '#d1437a');
+  N('tr-tab', 'train', 0, 0, 'ui', 'Train tab + hyperparameter window', 'dataset picker, 4 key spinboxes, All hyperparameters…, Import sheet…, live checks', { w: 260, files: [['structsept/app/tab_train.py', 692, '_start_training'], ['structsept/app/tab_train.py', 770, '_poll_progress']],
+    body: `<p>Pick a dataset (the tab warns when d ≥ 2 has fewer than 40 shapes), set d / layers / width / epochs on the card, and open "All hyperparameters…" for the rest: start from a run or preset, or import the supervisor's sheet. Then name the run and press Train.</p><p>The set is validated first; training runs on a worker thread while the loss curve is redrawn from Logs.pth every 1.5 s. The runs table lists every run with Edit, Delete and Load hyperparameters.</p>` });
+  N('tr-hp', 'train', 0, 180, 'module', 'hyperparams.py', 'schema of every specs.json key; validate() → error / warning / note; from_sheet', { w: 260, files: [['structsept/app/hyperparams.py', 862, 'validate'], ['structsept/app/hyperparams.py', 624, 'FIXED'], ['structsept/app/hyperparams.py', 1426, 'from_sheet']],
+    body: `<p>One <code>Field</code> per changeable specs.json key: type, range, default, target key and a help text. The hyperparameter window, the card summary and <code>training.write_specs</code> are all built from it.</p><p><code>validate()</code> catches what would crash or waste a run (an odd SamplesPerScene, a skip connection with width ≤ d + coordinates, decay steps that are never reached). <code>FIXED</code> lists what the trainer hard-codes; <code>from_sheet</code> translates the xlsx.</p>` });
+  N('tr-un', 'train', 0, 360, 'module', 'unattended.py + experiments/train_plate_*.py', 'log + pid, prepare_run(_like), --start-at / --after, KeepAwake, deadline watchdog, analysis', { w: 260, files: [['structsept/app/unattended.py', 319, 'train_with_deadline'], ['structsept/app/unattended.py', 73, 'open_log']],
+    body: `<p>Plumbing shared by the headless scripts, moved into <code>structsept/</code> once a second script needed it: <code>open_log</code>, <code>wait_until</code> / <code>wait_for_process</code>, <code>KeepAwake</code>, <code>prepare_run</code> / <code>prepare_run_like</code>, <code>train_with_deadline</code>, readers for codes and splits, and <code>code_vs_parameter</code>.</p><p>The scripts keep only a recipe, a dataset name and their own analysis. Frame 10 walks through one run.</p>` });
+  N('tr-train', 'train', 360, 180, 'symbol', 'training.train()', 'seeds torch before the decoder is built (works around the library\'s order), CPU, forwards logs', { w: 250, files: [['structsept/app/training.py', 129, 'train'], ['structsept/app/training.py', 28, 'write_specs'], ['structsept/app/training.py', 185, 'write_metadata']],
+    body: `<p>The single entry point of the GUI and the scripts: loads specs.json, seeds Python, NumPy and torch with the run's seed, forwards the library logger to a callback and calls <code>train_deep_sdf(run_dir, data_root, device="cpu")</code>.</p><p>The early seeding matters because the library draws the decoder's initial weights a few lines before it seeds; without it two identical runs in one GUI session start from different weights.</p>` });
+  N('tr-lib', 'train', 700, 180, 'external', 'train_deep_sdf', 'Embedding codes + MLP, Adam (2 groups), clamped L1 + code regularisation', { w: 250, files: [['DeepSDFStruct/DeepSDFStruct/deep_sdf/training.py', 299, 'train_deep_sdf']],
+    body: `<p>The DeepSDF trainer in the submodule. It reads everything from the run's specs.json, builds the decoder MLP and an <code>nn.Embedding</code> of codes drawn from N(0, (CodeInitStdDev / √d)²), and trains both with one Adam whose two parameter groups (decoder, codes) have their own lr schedules.</p><p>Loss: clamped L1 on φ plus a code-norm penalty ramped in over 100 epochs. Writes latest.pth every LogFrequency epochs, numbered snapshots, Logs.pth and, at the end, training_summary.json. Its Ctrl-C handler exits cleanly.</p>` });
+  N('tr-run', 'train', 700, 0, 'data', 'runs/&lt;run&gt;/', 'specs.json, metadata.json, ModelParameters/ LatentCodes/ (latest.pth), Logs.pth', { w: 250, files: [['structsept/app/training.py', 28, 'write_specs'], ['structsept/app/training.py', 185, 'write_metadata']],
+    body: `<p>Everything about one decoder. specs.json is written before training and is all the trainer reads; metadata.json is the app's record (dataset, timestamp, final loss, and for headless runs stopped_at_deadline and last_epoch).</p><p>The trainer adds ModelParameters/, LatentCodes/ and OptimizerParameters/ (latest.pth plus snapshots), Logs.pth / Logs.png and, on a finished run, training_summary.json. The analyses add code_vs_* files.</p>` });
+  N('tr-traps', 'train', 700, 360, 'sticky', 'Trainer traps', 'gradient clip hard-coded 1.0; clampedL1 clamps at 0.1; odd SamplesPerScene crashes; Step decay at 500 never fires in short runs.', { w: 270 });
+  E('tr-tab', 'tr-hp', 'validated by', 'uses'); E('tr-tab', 'tr-train', 'worker thread', 'calls'); E('tr-un', 'tr-train', 'same call', 'calls');
+  E('tr-train', 'tr-lib', 'calls', 'calls'); E('tr-lib', 'tr-run', 'writes', 'disk'); E('tr-run', 'tr-tab', 'loss curve (Logs.pth)', 'disk', { curve: 40 });
+
+  /* ---------- 7 GUI ---------- */
+  F('gui', 'The GUI', 'structsept/app', 0, 1800, '#c026d3');
+  N('gui-shot', 'gui', 0, 0, 'image', 'Explore tab with ChiAndCross loaded (older screenshot, before the Explore 2-D tab)', '', { w: 420, src: '../figures/gui_explore.png' });
+  N('gui-main', 'gui', 480, 0, 'ui', 'main.py: build_app', 'Agg backend, theme first, one shared state dict (ex_/e2_/tr_), 3 tabs, queue poll every 100 ms', { w: 260, files: [['structsept/app/main.py', 53, 'build_app']],
+    body: `<p>Builds the explorer window: matplotlib on Agg (the library plots from worker threads), the theme applied before any widget exists, one shared state dict with per-tab key prefixes (ex_, e2_, tr_), the three tabs, and the 100 ms queue poll.</p><p><code>build_app(root)</code> also accepts the launcher's splash root, so the finished window appears where the splash was.</p>` });
+  N('gui-rt', 'gui', 480, 190, 'module', 'runtime.py', 'only the Tk thread touches widgets; run_worker + queue; debounce', { w: 260, files: [['structsept/app/runtime.py', 65, 'run_worker'], ['structsept/app/runtime.py', 39, 'poll'], ['structsept/app/runtime.py', 126, 'reschedule']],
+    body: `<p>Worker-thread plumbing for all tabs. <code>run_worker</code> runs a job on a thread, disables its button and refuses a second job while one is busy; anything the worker wants shown goes into a queue that <code>poll</code> drains on the Tk thread every 100 ms.</p><p><code>reschedule</code> is the debounce behind the redraws and the training-progress poll.</p>` });
+  N('gui-ex', 'gui', 820, 0, 'ui', 'Explore', 'drag spline control points = one optimiser iteration by hand; redraws after 120 / 400 ms', { w: 250, files: [['structsept/app/tab_explore.py', 55, 'build'], ['structsept/app/tab_explore.py', 846, '_schedule_redraw']],
+    body: `<p>The online half of the paper by hand: choose a decoder, the number of latent control points and unit cells, then select a control point in the grid and move its slider, the knob MMA would turn.</p><p>The f<sub>θ</sub> slice redraws 120 ms after a change; latent field, unit cell and volume fraction wait 400 ms. A coverage strip and the distance to the nearest trained code warn when the design leaves the trained range. Extract surface runs FlexiCubes.</p>` });
+  N('gui-e2', 'gui', 820, 190, 'ui', 'Explore 2-D', 'planar decoders f<sub>θ</sub>(λ, x, y): one slider per latent component', { w: 250, files: [['structsept/app/tab_explore2d.py', 43, 'build'], ['structsept/app/tab_explore2d.py', 345, '_build_sliders']],
+    body: `<p>For decoders trained on (x, y, φ) rows, which describe a whole plate rather than a unit cell: no lattice and no control net, the design variables are the d components of λ, one slider each.</p><p>Shows the plate as material / void, its area fraction, per-component coverage of the trained codes and the distance to the nearest one. This is where the plate-family runs are inspected.</p>` });
+  N('gui-models', 'gui', 1140, 90, 'module', 'models.py', 'the explorers\' only torch module: list/load decoders, build_lattice (step 3), surface_mesh (step 4)', { w: 250, files: [['structsept/app/models.py', 201, 'build_lattice'], ['structsept/app/models.py', 128, 'list_models'], ['structsept/app/models.py', 289, 'surface_mesh'], ['structsept/app/models.py', 503, 'eval_field_2d']],
+    body: `<p>Where the explore tabs touch torch and DeepSDFStruct. <code>list_models</code> finds pretrained decoders and runs/, <code>build_lattice</code> assembles SDFfromDeepSDF + a degree-1 SplineParametrization + LatticeSDFStruct + CappedBorderSDF, <code>surface_mesh</code> calls create_3D_mesh, and <code>eval_field_2d</code> decodes a planar field.</p><p>The tabs only ever receive numpy arrays.</p>` });
+  N('gui-launch', 'gui', 0, 380, 'module', 'launcher.py + install_shortcuts.bat', 'desktop shortcuts under pythonw: log file instead of stderr, splash while torch imports, uv sync when the lock changes', { w: 300, files: [['structsept/app/launcher.py', 529, 'run'], ['install_shortcuts.bat', 1, '']],
+    body: `<p>What the two Desktop shortcuts (folder NN) run; <code>install_shortcuts.bat</code> fetches the submodule if needed, runs <code>uv sync</code> and creates them. Under pythonw there is no stderr, so output goes to outputs/logs/&lt;window&gt;.log and tqdm is switched off; a splash appears within a second while torch imports on a thread.</p><p>Before importing, it re-runs <code>uv sync</code> when pyproject.toml or uv.lock changed, unless another structsept window is open.</p>` });
+  E('gui-main', 'gui-ex', 'tab', 'calls'); E('gui-main', 'gui-e2', 'tab', 'calls'); E('gui-main', 'gui-rt', 'state + queue', 'uses');
+  E('gui-ex', 'gui-models', 'build_lattice', 'calls'); E('gui-e2', 'gui-models', 'eval_field_2d', 'calls');
+
+  /* ---------- 8 Library loop ---------- */
+  F('opt', 'DeepSDFStruct: the optimisation loop', 'the template test', 1900, 1800, '#475569');
+  N('op-model', 'opt', 0, 0, 'symbol', 'get_model → SDFfromDeepSDF', 'decoder + trained codes as one unit cell on [−1,1]³ (DeepSDFModel is not an nn.Module)', { w: 260, files: [['DeepSDFStruct/DeepSDFStruct/pretrained_models.py', 98, 'get_model'], ['DeepSDFStruct/DeepSDFStruct/SDF.py', 1199, 'SDFfromDeepSDF'], ['DeepSDFStruct/DeepSDFStruct/deep_sdf/models.py', 23, 'DeepSDFModel']],
+    body: `<p><code>get_model(PretrainedModels.AnalyticRoundCross)</code> loads a shipped decoder with its trained codes into a <code>DeepSDFModel</code>, a plain container. <code>SDFfromDeepSDF</code> turns it into an SDF on [−1, 1]³; its latent is a constant by default, or per query point when a lattice sets it from the parametrization.</p>` });
+  N('op-param', 'opt', 0, 190, 'symbol', 'SplineParametrization', 'control points = nn.Parameter (n_cp, d) = λ̂', { w: 260, files: [['DeepSDFStruct/DeepSDFStruct/parametrization.py', 133, 'SplineParametrization'], ['DeepSDFStruct/tests/test_structural_optimization.py', 34, 'the template spline']],
+    body: `<p>Wraps a splinepy B-spline in a <code>TorchSpline</code>, whose control points become the trainable tensor of shape (n_cp, d). <code>next(parametrization.parameters())</code> is the λ̂ handed to MMA.</p><p>In the template: degrees (1, 0, 1), 5 × 1 × 3 = 15 control points, all starting at 0.3.</p>` });
+  N('op-lat', 'opt', 340, 90, 'symbol', 'LatticeSDFStruct + CappedBorderSDF', 'λ(x) per query, T(x) per cell; caps make it watertight', { w: 260, files: [['DeepSDFStruct/DeepSDFStruct/lattice_structure.py', 39, 'LatticeSDFStruct'], ['DeepSDFStruct/DeepSDFStruct/SDF.py', 1450, 'CappedBorderSDF']],
+    body: `<p><code>LatticeSDFStruct(tiling, microtile, parametrization)</code> evaluates λ(x) at every query inside its bounds, pushes it into the microtile, folds the coordinates with T(x) and queries the decoder; outside the bounds it returns the distance to the box.</p><p>Cells cut by the domain faces leave the raw lattice open. <code>CappedBorderSDF</code> adds or removes a slab of material at chosen faces so the surface closes; the template nests two of them.</p>` });
+  N('op-mesh', 'opt', 680, 90, 'symbol', 'create_3D_mesh(…, deformation_function=FFD)', 'FlexiCubes; vertices keep grad_fn', { w: 260, files: [['DeepSDFStruct/DeepSDFStruct/mesh.py', 669, 'create_3D_mesh'], ['DeepSDFStruct/tests/test_structural_optimization.py', 74, 'the two calls']],
+    body: `<p>The template calls it twice per iteration at N = 10: <code>mesh_type="volume"</code> for the tetrahedra fed to torch-fem, <code>"surface"</code> to assert the result is watertight. The deformation is a <code>TorchSpline</code> of a 2 × 1 × 1 box.</p><p>Even with <code>differentiate=False</code> the vertices are torch tensors computed from the SDF, so autograd can trace J back to λ̂.</p>` });
+  N('op-fem', 'opt', 1020, 90, 'external', 'torch-fem Solid → u', 'float64; BCs, forces, solve; J = f·u, G = V − V<sub>target</sub>', { w: 250, files: [['DeepSDFStruct/tests/test_structural_optimization.py', 135, 'torchfem.solid.Solid'], ['DeepSDFStruct/tests/test_structural_optimization.py', 148, 'cantilever.solve']],
+    body: `<p>The template switches to float64 on the CPU, flips inverted tets and drops degenerate ones, builds <code>torchfem.solid.Solid</code> with E = 1000, ν = 0.3, clamps the nodes at x ≈ 0, spreads a load of −100 in z over the top face (z &gt; 0.9) and solves.</p><p>J = f·u (compliance) and G = V − 0.5; dF and dG come from <code>torch.autograd.grad</code> with respect to λ̂.</p>` });
+  N('op-mma', 'opt', 680, 280, 'symbol', 'MMA(param, bounds).step(F, dF, G, dG)', 'writes the new λ̂ in place; bounds [0.15, 0.75]', { w: 280, files: [['DeepSDFStruct/DeepSDFStruct/optimization.py', 170, 'MMA'], ['DeepSDFStruct/DeepSDFStruct/optimization.py', 349, 'MMA.step']],
+    body: `<p>Svanberg's Method of Moving Asymptotes via mmapy: one objective, box bounds per design variable, <code>n_constraints</code> constraints (1 by default). Each <code>step</code> builds a convex approximation from values and gradients, solves it, and writes the result into the parameter tensor in place, so the parametrization sees it without a rebuild.</p><p>The objective is normalised by its first value; <code>max_step</code> (0.1 of the bound range) limits each move.</p>` });
+  N('op-test', 'opt', 0, 520, 'module', 'DeepSDFStruct/tests/test_structural_optimization.py', 'THE template: 2×1×1 beam, AnalyticRoundCross, 15 control points', { w: 320, files: [['DeepSDFStruct/tests/test_structural_optimization.py', 21, 'test_structural_optimization']],
+    body: `<p>Steps 3-6 in one function, and the starting point for any new optimisation run: AnalyticRoundCross microtile, 2×1×1 tiling, 15-point latent spline, capped borders, FFD box, volume tets at N = 10, a cantilever load case, one MMA step with bounds [0.15, 0.75] and target volume 0.5.</p><p>It asserts that both gradients are non-zero and writes sim_out.vtk. Run it with <code>uv run pytest DeepSDFStruct/tests/test_structural_optimization.py -v</code>.</p>` });
+  N('op-gap', 'opt', 1340, 280, 'sticky', 'Not in this repo yet', 'No structsept/ or experiments/ script calls MMA. The 2-D plate decoders cannot be tiled by LatticeSDFStruct as they are.', { w: 260 });
+  E('op-model', 'op-lat', 'microtile'); E('op-param', 'op-lat', 'λ(x)'); E('op-lat', 'op-mesh', 'SDF grid'); E('op-mesh', 'op-fem', 'tets');
+  E('op-fem', 'op-mma', 'F, dF, G, dG'); E('op-mma', 'op-param', 'new λ̂'); E('op-fem', 'op-param', 'gradients (autodiff)', 'grad', { fs: 'b', ts: 'b', k: 190 });
+
+  /* ---------- 9 Geometry to K ---------- */
+  F('fem', 'structsept: geometry → stiffness K', 'plate_with_hole, fem, point clouds', 3700, 1800, '#0369a1');
+  N('fe-plate', 'fem', 0, 0, 'symbol', 'plate_with_hole()', 'AnalyticRoundCross lattice − scaled cylinder (ScaledSpaceSDF) → CappedBorderSDF; + TorchSpline box', { w: 260, files: [['structsept/plate_with_hole.py', 83, 'plate_with_hole'], ['structsept/plate_with_hole.py', 43, 'ScaledSpaceSDF']],
+    body: `<p>The recurring test geometry: a 5×5×1 lattice of AnalyticRoundCross cells with one constant latent (default 0.4), minus a cylinder through the thickness, capped, and paired with a TorchSpline box that maps [0, 1]³ to length × width × thickness in metres.</p><p><code>ScaledSpaceSDF</code> lets the hole be given in metres although the SDF lives in parameter space; <code>solid=True</code> swaps the lattice for a plain box. CLI: <code>uv run python -m structsept.plate_with_hole --hole-radius 0.3</code>.</p>` });
+  N('fe-tet', 'fem', 340, 0, 'symbol', 'fem.tetrahedral_mesh', 'FlexiCubes surface → watertight check → tetgen → orientation fix', { w: 250, files: [['structsept/fem.py', 98, 'tetrahedral_mesh']],
+    body: `<p>FlexiCubes surface (with the FFD applied, so in metres), a watertightness check, then tetgen fills the volume; finally inverted tets are flipped and zero-volume ones dropped. Returns float64 vertices and int64 tets on the CPU.</p><p>tetgen is used instead of FlexiCubes' own tets because those covered only about 70 % of the enclosed volume; the price is that gradients stop at tetgen.</p>` });
+  N('fe-K', 'fem', 680, 0, 'symbol', 'assemble_stiffness + check_stiffness', 'k_e → sparse K (3n×3n); symmetric, positive diagonal, 6 rigid-body modes in the kernel', { w: 270, files: [['structsept/fem.py', 197, 'assemble_stiffness'], ['structsept/fem.py', 176, 'build_solid'], ['structsept/fem.py', 230, 'check_stiffness'], ['experiments/plate_with_hole_stiffness.py', 97, 'main (the demo)']],
+    body: `<p><code>build_solid</code> wraps nodes, tets and a material (steel by default: E = 210 GPa, ν = 0.3) in a torch-fem <code>Solid</code>; <code>assemble_stiffness</code> computes one 12×12 k<sub>e</sub> per tet and scatters them into the sparse global K.</p><p><code>check_stiffness</code> verifies symmetry, a positive diagonal and K·u = 0 for the six rigid-body modes, which an unconstrained K must satisfy. Demo: <code>experiments/plate_with_hole_stiffness.py</code>.</p>` });
+  N('fe-pc', 'fem', 0, 190, 'symbol', 'PointCloudSDF → pointcloud_to_lattice.py', 'winding-number sign; fits a latent spline to a scan (IoU 15.4 % → 99.5 %)', { w: 280, files: [['structsept/pointcloud_sdf.py', 216, 'PointCloudSDF'], ['experiments/pointcloud_to_lattice.py', 190, 'main']],
+    body: `<p><code>PointCloudSDF</code> is an SDF built from an oriented point cloud: sign from the generalised winding number, magnitude from a KD-tree (refined to the tangent plane near the surface). Ground-truth data, not differentiable.</p><p><code>experiments/pointcloud_to_lattice.py</code> fits the latent-spline control points to it with the library's reconstructor (decoder frozen). Default run on a cone: IoU 15.4 % → 99.5 % in 170 steps, a real starting design for MMA.</p>` });
+  N('fe-gap', 'fem', 340, 190, 'sticky', 'Stops at K', 'No BCs, loads or solve yet; tetgen runs in numpy, so gradients stop there (FlexiCubes\' own volume mesh loses ~30 % volume).', { w: 280 });
+  E('fe-plate', 'fe-tet', 'SDF + FFD'); E('fe-tet', 'fe-K', 'nodes, tets');
+
+  /* ---------- 10 Unattended training ---------- */
+  F('unatt', 'Training overnight', 'no GUI needed', 0, 2700, '#b45309');
+  N('un-cmd', 'unatt', 0, 0, 'cmd', 'uv run python experiments/train_plate_xyr_4h.py --after outputs/logs/&lt;run&gt;.pid --max-hours 4', 'starts after another run ends, stops cleanly after 4 h', { w: 300 });
+  N('un-scripts', 'unatt', 360, 0, 'module', 'experiments/train_plate_*.py', 'r_only_4h (d = 1 or 2, 600 epochs) · xyr_4h (d = 3, 300 epochs) · tri --family h|hw (preset recipe) · xyr_n166 (800 epochs)', { w: 360, files: [['experiments/train_plate_r_only_4h.py', 215, 'main'], ['experiments/train_plate_xyr_4h.py', 413, 'main'], ['experiments/train_plate_tri.py', 153, 'main'], ['experiments/train_plate_xyr_n166.py', 231, 'main']],
+    body: `<ul><li><code>train_plate_r_only_4h.py</code>: 8×256 recipe in HPARAMS, 600 epochs, <code>--latent-dim</code> (run with d = 1 and 2), deadline <code>--max-hours</code></li><li><code>train_plate_xyr_4h.py</code>: same network, 300 epochs, d = 3, affine-fit analysis, <code>--check-only</code></li><li><code>train_plate_tri.py --family h|hw</code>: copies the family's preset specs, no deadline</li><li><code>train_plate_xyr_n166.py</code>: copies the 800-epoch run's specs (<code>--like</code>), no deadline, coverage analysis</li></ul>` });
+  N('un-presets', 'unatt', 780, 0, 'module', 'experiments/make_plate_presets.py', 'writes runs/preset_* (specs.json + metadata.json, untrained; absolute paths, so re-run on every machine)', { w: 280, files: [['experiments/make_plate_presets.py', 131, 'write_preset'], ['experiments/make_plate_presets.py', 56, 'COMMON']],
+    body: `<p>Writes four untrained presets (r_only d = 1, xyr d = 3, tri_h d = 1, tri_hw d = 2) on one recipe: 4×64 ReLU, 1500 epochs, lr halved at 500 and 1000, 4096 samples per shape, 5 shapes per batch, σ = √(0.01·d). Each is validated against its dataset first.</p><p>specs.json stores absolute paths and runs/ is not in git, so re-run it after building the datasets on a new machine.</p>` });
+  N('un1', 'unatt', 0, 200, 'step', 'open_log', 'tee stdout to outputs/logs/&lt;run&gt;.log, write &lt;run&gt;.pid', { num: 1, w: 240, files: [['structsept/app/unattended.py', 73, 'open_log']],
+    body: `<p>Sends stdout and stderr to a Tee (console + <code>outputs/logs/&lt;run&gt;.log</code>, appended) and writes the process id to <code>&lt;run&gt;.pid</code>. A script launched hidden has no console, so the log is its only trace; the pid file is what <code>--after</code> and taskkill use.</p>` });
+  N('un2', 'unatt', 290, 200, 'step', 'prepare_run(_like)', 'validated specs.json + metadata.json, so the run shows in the GUI while it waits; _like copies a preset key for key', { num: 2, w: 250, files: [['structsept/app/unattended.py', 247, 'prepare_run'], ['structsept/app/unattended.py', 422, 'prepare_run_like']],
+    body: `<p><code>prepare_run</code> merges a recipe into the defaults, clamps the save intervals to the epoch count (so a 2-epoch smoke test still leaves latest.pth), validates against the dataset and writes specs.json + metadata.json. <code>prepare_run_like</code> copies a reference run's specs.json instead and refuses to train if anything besides data paths and description would differ.</p><p>Both refuse to overwrite a trained checkpoint without <code>--force</code>.</p>` });
+  N('un3', 'unatt', 590, 200, 'step', 'wait + KeepAwake', '--start-at HH:MM or --after &lt;pid file&gt;; Windows is kept awake for this process only', { num: 3, w: 240, files: [['structsept/app/unattended.py', 141, 'KeepAwake'], ['structsept/app/unattended.py', 167, 'wait_until'], ['structsept/app/unattended.py', 218, 'wait_for_process']],
+    body: `<p><code>wait_until</code> sleeps until the <code>--start-at</code> time ('now', 'HH:MM' or 'YYYY-MM-DD HH:MM'); <code>wait_for_process</code> polls the pid given by <code>--after</code> every 30 s, so runs can be chained without guessing when the previous one ends.</p><p><code>KeepAwake</code> calls SetThreadExecutionState(ES_SYSTEM_REQUIRED): a per-process request that ends with the process and changes no power setting.</p>` });
+  N('un4', 'unatt', 880, 200, 'step', 'train_with_deadline', 'a watchdog interrupts the main thread at the deadline: a clean Ctrl-C exit, latest.pth survives', { num: 4, w: 250, files: [['structsept/app/unattended.py', 319, 'train_with_deadline']],
+    body: `<p>Used by the two *_4h scripts. A daemon thread waits until <code>--max-hours</code> after training started and calls <code>_thread.interrupt_main()</code>; the library's own Ctrl-C handler then leaves the training loop cleanly. What remains is the last latest.pth (at most LogFrequency epochs lost) and the snapshots; metadata.json records stopped_at_deadline and last_epoch.</p><p>The tri and n166 scripts have no deadline and call <code>training.train</code> directly.</p>` });
+  N('un5', 'unatt', 1180, 200, 'step', 'Analyse', 'code_vs_parameter, compare_codes_with_params or latent_coverage write their files into the run folder', { num: 5, w: 250, files: [['structsept/app/unattended.py', 525, 'code_vs_parameter'], ['experiments/train_plate_xyr_4h.py', 261, 'compare_codes_with_params'], ['experiments/train_plate_xyr_n166.py', 160, 'latent_coverage']],
+    body: `<p>Each script's own check, written next to the checkpoints: <code>code_vs_&lt;param&gt;.csv/png</code> (r_only, tri), <code>code_vs_params.csv/json/png</code> (xyr_4h), <code>latent_coverage.json</code> (n166). A failure here is logged and does not fail the run.</p><p><code>--check-only</code> (xyr_4h, tri, n166) re-runs just this step on an existing run.</p>` });
+  N('un-kill', 'unatt', 1140, 0, 'sticky', 'Stopping and redoing', 'taskkill /PID &lt;pid from the .pid file&gt; /F. --force retrains from scratch; there is no resume. --check-only (xyr_4h, tri, n166) re-runs only the analysis.', { w: 270 });
+  E('un-cmd', 'un1', 'starts'); E('un1', 'un2'); E('un2', 'un3'); E('un3', 'un4'); E('un4', 'un5');
+  E('un-scripts', 'un2', 'use unattended.py', 'calls'); E('un-presets', 'un2', 'recipe (--like)', 'disk');
+
+  /* ---------- 11 Files on disk ---------- */
+  F('disk', 'Files on disk', 'what lives where', 1950, 2700, '#a16207');
+  N('fd-ds', 'disk', 0, 0, 'data', 'data/SdfSamples/&lt;ds&gt;/', 'plate/&lt;name&gt;.npz · dataset.json · params.csv · preview.png', { w: 280, files: [['datagen/dataset.py', 1, 'the layout (module docstring)']],
+    body: `<p>One folder per dataset: <code>plate/&lt;name&gt;.npz</code> per shape, <code>dataset.json</code> (how it was made: exact command, frame, sampling), <code>params.csv</code> (generating parameters, never seen by the network) and, with <code>--plot</code>, preview.png and parameters.png.</p><p>Present: plate_hole_2d_r_only (40), plate_hole_2d_xyr (134), plate_hole_2d_xyr_n166 (166), plate_tri_2d_h (40), plate_tri_2d_hw (133), plus the older n25 and n134.</p>` });
+  N('fd-split', 'disk', 0, 170, 'data', 'data/splits/&lt;ds&gt;.json', '{ds: {plate: [names]}}; its order is the latent index', { w: 280, files: [['datagen/dataset.py', 145, 'write_split'], ['structsept/app/unattended.py', 403, 'split_names']],
+    body: `<p>The list the trainer reads to find the shapes. Its order fixes the latent index: code i belongs to the i-th name, which is also row i of params.csv. The analyses still join by name through the split rather than trusting row order.</p>` });
+  N('fd-run', 'disk', 360, 0, 'data', 'runs/&lt;run&gt;/', 'specs.json · metadata.json · Logs.pth/png · training_summary.json · code_vs_*', { w: 300, files: [['structsept/app/training.py', 28, 'write_specs'], ['structsept/app/training.py', 185, 'write_metadata']],
+    body: `<p>specs.json is the recipe (with absolute DataSource / TrainSplit paths), metadata.json the app's record, Logs.pth the loss history the Train tab plots (Logs.png is the trainer's own plot). training_summary.json only exists for a run that finished; code_vs_* and latent_coverage.json come from the analyses.</p>` });
+  N('fd-ckpt', 'disk', 360, 170, 'data', 'ModelParameters/ LatentCodes/ OptimizerParameters/', '1.pth … latest.pth; LatentCodes/latent_code_data_map.json maps code → npz', { w: 300, files: [['DeepSDFStruct/DeepSDFStruct/deep_sdf/training.py', 159, 'save_model'], ['DeepSDFStruct/DeepSDFStruct/deep_sdf/training.py', 191, 'save_latent_code_data_map']],
+    body: `<p>Three parallel folders with the same file names: numbered snapshots (every SnapshotFrequency epochs plus AdditionalSnapshots) and latest.pth, rewritten every LogFrequency epochs. The GUI and the analyses load "latest".</p><p><code>latent_code_data_map.json</code> records which npz file each latent index was trained on.</p>` });
+  N('fd-logs', 'disk', 740, 0, 'data', 'outputs/logs/', '&lt;run&gt;.log + &lt;run&gt;.pid (headless runs); explorer.log, sdf_maker.log (desktop shortcuts)', { w: 280, files: [['structsept/app/unattended.py', 73, 'open_log'], ['structsept/app/launcher.py', 139, 'open_log (launcher)']],
+    body: `<p>Headless scripts write <code>&lt;run&gt;.log</code> (appended, so restarts stack up) and <code>&lt;run&gt;.pid</code> here; the desktop launcher writes one log per window. Nothing deletes a pid file when its process ends, so check the process is still alive before trusting one.</p>` });
+  N('fd-eo', 'disk', 740, 170, 'data', 'experiments/outputs/', 'figures, STL/VTK meshes, stiffness_matrix.npz, pointcloud/', { w: 280, files: [['experiments/plate_with_hole_stiffness.py', 60, 'export']],
+    body: `<p>Written by the experiment scripts and fully regenerable: the stiffness demo writes stiffness_matrix.npz, plate_with_hole_tets.vtk and stiffness_sparsity.png; the geometry scripts write renders, STL and VTK meshes; the point-cloud fit writes into pointcloud/.</p>` });
+  N('fd-ign', 'disk', 0, 330, 'sticky', 'Not in git', 'data/, runs/ and outputs/ are gitignored, and specs.json stores absolute paths: on a new machine rebuild the datasets and re-run make_plate_presets.py.', { w: 320 });
+  E('fd-run', 'fd-split', 'TrainSplit', 'uses'); E('fd-split', 'fd-ds', 'names → files', 'uses'); E('fd-run', 'fd-ckpt', 'contains', 'uses');
+
+  /* ---------- 12 Research status ---------- */
+  F('status', 'Where the research stands', '2 October 2026', 3300, 2700, '#be123c');
+  N('rs-q', 'status', 0, 0, 'concept', 'The question', 'With d latent dimensions, does the auto-decoder recover the parameters that generated the shapes? The network never sees them.', { w: 300, files: [['experiments/IDEIAS.md', 387, 'two datasets (23/09)']],
+    body: `<p>The plate families are generated from known parameters (r; x<sub>c</sub>, y<sub>c</sub>, r; h; h and w), stored in params.csv but never given to the decoder. After training, the learned codes are compared with them.</p><p>If d codes recover d parameters, the latent space is interpretable and box bounds on it mean something, which is what an MMA design space needs.</p>` });
+  N('rs-r1', 'status', 380, 0, 'data', 'Centred hole, r only (40 shapes)', 'd = 1: the code is a straight line in r (Pearson −1.000). d = 2: a line plus a frozen noise direction.', { w: 270, files: [['experiments/IDEIAS.md', 520, 'result d = 1'], ['experiments/IDEIAS.md', 599, 'result d = 2']],
+    body: `<p>d = 1 (plate2d_r_only_d1_8x256_4h, 600 epochs in 1 h 36 min): Pearson and Spearman −1.000 against r, monotonic.</p><p>d = 2, same recipe: the 40 codes lie on a tilted line holding 84.8 % of the variance, and the position along it tracks r (Spearman +1.000). The perpendicular part is the random initialisation, frozen (correlation 0.96 between epochs 1 and 600).</p>` });
+  N('rs-r2', 'status', 380, 160, 'data', 'Free hole x<sub>c</sub>, y<sub>c</sub>, r (134)', 'd = 2: keeps the centre, loses r (R² 0.009). d = 3: affine R² x<sub>c</sub> 0.988, r 0.857, y<sub>c</sub> 0.741.', { w: 270, files: [['experiments/IDEIAS.md', 665, 'd = 2 check'], ['experiments/IDEIAS.md', 689, 'result d = 3']],
+    body: `<p>d = 2 (GUI run plate_hole_2d_n134_d2_20260928_1338): code 0 follows y<sub>c</sub>, code 1 follows x<sub>c</sub>, r is absent. Moving the hole changes the whole field, the radius only a band around it.</p><p>d = 3 (plate2d_xyr_d3_8x256_4h, 300 epochs, 2 h 47 min): r enters the code. The y<sub>c</sub> error sits in the lower half (RMSE 0.164 for y<sub>c</sub> &lt; 0.45 against 0.051 above).</p>` });
+  N('rs-r3', 'status', 380, 320, 'data', 'Plus 32 large holes (166)', 'built to close the r gap in latent space; its 800-epoch run died at epoch 80', { w: 270, files: [['experiments/IDEIAS.md', 767, 'coverage gaps + n166'], ['experiments/IDEIAS.md', 971, 'the run died']],
+    body: `<p>Only 8 of the 134 shapes have r &gt; 0.25 and none lies between 0.342 and 0.45; that showed up as a 29 % gap along λ<sub>1</sub>. <code>--large-holes 32 --large-holes-from 0.25</code> appends 32 holes with r in [0.25, 0.45]; the first 134 npz files are byte-identical to the xyr set.</p><p>Run plate_hole_2d_xyr_n166_d3_ep800 stopped at epoch 80 with nothing in the log; cause unknown, relaunch pending.</p>` });
+  N('rs-r4', 'status', 720, 0, 'data', 'Four triangles, h (40)', 'd = 1: Pearson −1.000 in 20.6 min', { w: 250, files: [['experiments/IDEIAS.md', 906, 'result']],
+    body: `<p>plate_tri_2d_h: heights 0.05 to 0.3, base 2h. With the preset recipe (4×64, 1500 epochs), run plate_tri_2d_h_d1_4x64: Pearson and Spearman −1.000 against h, monotonic, smallest triangles included.</p>` });
+  N('rs-r5', 'status', 720, 160, 'data', 'Four triangles, h and w (133)', 'd = 2: linear R² h 1.000, w 0.996', { w: 250, files: [['experiments/IDEIAS.md', 958, 'result']],
+    body: `<p>plate_tri_2d_hw: Sobol 128 + 5 extremes in (h, w), with w up to min(0.6, h + 0.359). Run plate_tri_2d_hw_d2_4x64 (49.9 min) recovers both through linear fits, while no single component is monotonic in either: the latent plane is the (h, w) trapezoid, rotated and sheared.</p>` });
+  N('rs-rules', 'status', 1040, 0, 'concept', 'Rules of thumb', 'd = number of parameters: recovered up to an affine basis (judge with an affine fit, not per component). d smaller: keeps the global parameter, drops the local one. Extra dimensions keep their random init. Gaps in the data become gaps in latent space.', { w: 320,
+    body: `<ul><li>Judge with a linear or affine fit of each parameter on all components, never component by component: the learned basis is arbitrary.</li><li>With too few dimensions the decoder keeps what changes the field most (the hole centre) and drops the local feature (r).</li><li>Unused dimensions barely move from their random start.</li><li>Sparse regions of the parameter space become gaps in latent space.</li></ul>` });
+  N('rs-next', 'status', 1040, 250, 'sticky', 'Next', 'relaunch n166 · y<sub>c</sub> in the lower half · prescribed (frozen) latent codes for box bounds · four-heights triangle family · finish FEM (BCs, loads, solve)', { w: 300 });
+  N('rs-git', 'status', 720, 320, 'sticky', 'Uncommitted', 'triangle family, n166 script, --large-holes; branch gui-train-tab is not merged into main', { w: 260, rot: 1 });
+  E('rs-q', 'rs-r1', 'tested on'); E('rs-q', 'rs-r2', 'tested on'); E('rs-q', 'rs-r4', 'tested on');
+  E('rs-r2', 'rs-r3', 'close the r gap'); E('rs-r4', 'rs-r5', 'free the width');
+  E('rs-r5', 'rs-rules', 'lessons', 'uses');
+
+  /* ---------- 13 Cheat sheet ---------- */
+  F('cheat', 'Command cheat sheet', 'from the repo root', 5100, 2700, '#4d7c0f');
+  N('ch1', 'cheat', 0, 0, 'cmd', 'git submodule update --init --recursive<br>uv sync', 'fresh clone: library + environment (install_shortcuts.bat does both + shortcuts)', { w: 330 });
+  N('ch2', 'cheat', 0, 130, 'cmd', 'uv run python -m datagen.make_plate_hole --dim 2 --radius-only --n-uniform 25000 --n-band 25000 --name plate_hole_2d_r_only --plot', 'centred-hole dataset (40 shapes)', { w: 330 });
+  N('ch3', 'cheat', 0, 290, 'cmd', 'uv run python -m datagen.make_plate_tri --dim 2 --free-width --n-uniform 25000 --n-band 25000 --name plate_tri_2d_hw --plot', 'four-triangle (h, w) dataset (133 shapes)', { w: 330 });
+  N('ch4', 'cheat', 380, 0, 'cmd', 'uv run python experiments/make_plate_presets.py', 'write the untrained presets into runs/', { w: 330 });
+  N('ch5', 'cheat', 380, 130, 'cmd', 'uv run python experiments/train_plate_r_only_4h.py --start-at now --max-hours 4', 'headless 8×256 run on the r-only family', { w: 330 });
+  N('ch6', 'cheat', 380, 260, 'cmd', 'uv run python -m structsept.app.sdf_maker', 'meshes → dataset window', { w: 330 });
+  N('ch7', 'cheat', 760, 0, 'cmd', 'uv run python experiments/plate_with_hole_stiffness.py', 'lattice plate → tets → stiffness matrix K (~7 s)', { w: 330 });
+  N('ch8', 'cheat', 760, 130, 'cmd', 'uv run pytest DeepSDFStruct/tests/test_structural_optimization.py -v', 'one iteration of the full optimisation loop', { w: 330 });
+  N('ch9', 'cheat', 760, 260, 'cmd', 'uv run --no-project --with typst python docs/handbook/build.py', 'rebuild handbook.pdf', { w: 330 });
+
+  /* ---------- tour ---------- */
+  T('Welcome', 'This board maps the Struct_Sept code. Frames are numbered; this tour walks through them. Click any card for details.', { frame: 'start' });
+  T('The idea', 'The paper\'s loop: train a decoder offline (1-2), then optimise the spline control points λ̂ with FEM and MMA online (3-6). The red dashed arrow is the gradient.', { frame: 'method' });
+  T('The repository', 'Three code bases plus data folders. Imports point one way: experiments → structsept → DeepSDFStruct.', { frame: 'repo' });
+  T('A day of work', 'Build a dataset, pick a recipe, train, compare the learned codes with the generating parameters, look at it, write it down in IDEIAS.md.', { frame: 'flow' });
+  T('Training data', 'datagen writes exact SDF samples in a fixed layout. Split order = latent index = params.csv row.', { frame: 'datagen' });
+  T('Training', 'GUI and headless scripts call the same training.train() → train_deep_sdf. A run is a folder in runs/.', { frame: 'train' });
+  T('The GUI', 'Explore is one optimiser iteration by hand; Explore 2-D is for the planar plate decoders.', { frame: 'gui' });
+  T('The optimisation loop', 'Lives in the library test; this repo has not called MMA yet.', { frame: 'opt' });
+  T('Geometry to stiffness', 'The project\'s own path from an SDF to the global stiffness matrix K, and the point-cloud fit.', { frame: 'fem' });
+  T('Training overnight', 'The headless scripts: log + pid, wait or chain, keep Windows awake, stop at a deadline, analyse the codes.', { frame: 'unatt' });
+  T('Files on disk', 'Datasets, runs, logs and outputs. None of them is in git.', { frame: 'disk' });
+  T('Where the research stands', 'The latent-interpretability question, the results so far and what comes next.', { frame: 'status' });
+  T('Cheat sheet', 'The commands you will type most often.', { frame: 'cheat' });
+  /* BOARD-DATA-END */
+
+  return { frames, nodes, edges, tour };
+})();
+</script>
+
+<script>
+/* =====================================================================
+   ENGINE
+   ===================================================================== */
+(() => {
+  'use strict';
+  const $ = s => document.querySelector(s);
+  const vp = $('#viewport'), world = $('#world'), svg = $('#edges'), defs = $('#markers');
+  const framesL = $('#frames'), nodesL = $('#nodes'), labelsL = $('#labels');
+  const view = { x: 0, y: 0, s: 1 };
+  const POS_KEY = 'structsept-board-pos-v1', THEME_KEY = 'structsept-board-theme', LEG_KEY = 'structsept-board-legend';
+  const KINDS = {
+    concept: 'Concept / paper', module: 'Python module / package', symbol: 'Class / function', data: 'Data on disk / tensor',
+    cmd: 'Command to run', ui: 'GUI window / tab', external: 'External library', step: 'Workflow step', sticky: 'Note / gotcha',
+  };
+  const EDGE_KINDS = {
+    flow: 'data / control flow', calls: 'calls / builds', import: 'imports', disk: 'writes / reads disk',
+    grad: 'gradient (backprop)', uses: 'related / uses',
+  };
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
+    del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
+  };
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  /* ---- theme ---- */
+  const savedTheme = store.get(THEME_KEY);
+  if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+  $('#btn-theme').onclick = () => {
+    const dark = getComputedStyle(document.documentElement).colorScheme.includes('dark');
+    const t = dark ? 'light' : 'dark';
+    document.documentElement.dataset.theme = t; store.set(THEME_KEY, t); drawMinimap();
+  };
+
+  /* ---- repo root for VS Code links ---- */
+  const repoRoot = (() => {
+    if (location.protocol !== 'file:') return null;
+    let p = decodeURIComponent(location.pathname);
+    const i = p.toLowerCase().lastIndexOf('/docs/handbook/');
+    if (i < 0) return null;
+    p = p.slice(0, i);
+    if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+    return p;
+  })();
+  const vscodeLink = (path, line) => repoRoot ? 'vscode://file/' + encodeURI(repoRoot + '/' + path) + (line ? ':' + line : '') : null;
+
+  /* ---- model ---- */
+  const frames = BOARD.frames.map((f, i) => ({ ...f, idx: i + 1 }));
+  const frameById = new Map(frames.map(f => [f.id, f]));
+  const saved = store.get(POS_KEY) || {};
+  const nodes = BOARD.nodes.map(n => {
+    const f = frameById.get(n.frame);
+    if (!f) console.warn('card without frame', n.id);
+    const base = { x: (f ? f.x : 0) + n.x, y: (f ? f.y : 0) + n.y };
+    const s = saved[n.id];
+    return { ...n, ax: s ? s[0] : base.x, ay: s ? s[1] : base.y, bx: base.x, by: base.y, w: n.w || 230, h: 60 };
+  });
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+  const edges = BOARD.edges.filter(e => {
+    const ok = nodeById.has(e.from) && nodeById.has(e.to);
+    if (!ok) console.warn('arrow with unknown end', e);
+    return ok;
+  });
+  edges.forEach((e, i) => { e.i = i; });
+  const adj = new Map(nodes.map(n => [n.id, []]));
+  edges.forEach(e => { adj.get(e.from).push(e); adj.get(e.to).push(e); });
+
+  /* ---- markers ---- */
+  defs.innerHTML = Object.keys(EDGE_KINDS).map(k =>
+    `<marker id="m-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+       <path d="M0,0 L10,5 L0,10 z" style="fill:var(--e-${k})"/></marker>`).join('')
+    .replace(/markerWidth="7" markerHeight="7"/g, 'markerWidth="11" markerHeight="11"');
+
+  /* ---- build DOM ---- */
+  frames.forEach(f => {
+    const el = document.createElement('div');
+    el.className = 'frame'; el.dataset.id = f.id;
+    el.innerHTML = `<div class="frame-title"><span class="num" style="background:${f.color}">${f.idx}</span><span class="t">${esc(f.title)}</span><span class="s">${f.sub || ''}</span></div>`;
+    f.titleEl = el.querySelector('.frame-title');
+    f.titleEl.onclick = ev => { ev.stopPropagation(); flyToFrame(f); };
+    framesL.appendChild(el); f.el = el;
+  });
+  nodes.forEach(n => {
+    const el = document.createElement('div');
+    const isSticky = n.kind === 'sticky', isText = n.kind === 'text', isImg = n.kind === 'image';
+    el.className = 'node ' + (isSticky ? 'sticky' : isText ? 'text' : isImg ? 'image' : 'k-' + n.kind);
+    el.dataset.id = n.id;
+    el.style.width = n.w + 'px';
+    if (isSticky && n.rot !== undefined) el.style.setProperty('--rot', n.rot + 'deg');
+    const kicker = n.kicker !== undefined ? n.kicker : (KINDS[n.kind] && !isText ? shortKind(n.kind) : '');
+    const file = n.files && n.files.length && !isSticky && !isText && !isImg ? n.files[0][0] + (n.files[0][1] ? ':' + n.files[0][1] : '') : '';
+    let html = '';
+    if (isImg) html = `<img src="${esc(n.src)}" alt="${esc(n.title)}" draggable="false"><div class="ttl">${n.title}</div>`;
+    else {
+      if (kicker) html += `<div class="kick">${kicker}</div>`;
+      // commands wrap between words only, never inside a --flag
+      const ttl = n.kind === 'cmd' ? n.title.split(' ').map(t => t.startsWith('-') ? `<span class="tok">${t}</span>` : t).join(' ') : n.title;
+      html += `<div class="ttl">${ttl}</div>`;
+      if (n.sub) html += `<div class="sub">${n.sub}</div>`;
+      if (file) html += `<div class="file">${esc(file)}</div>`;
+      if (n.body && !isText) html += `<div class="more" title="click for details">&#9432;</div>`;
+    }
+    el.innerHTML = html;
+    if (n.kind === 'step' && n.num) el.querySelector('.ttl').setAttribute('data-num', n.num);
+    nodesL.appendChild(el); n.el = el;
+  });
+  function shortKind(k) {
+    return { concept: 'concept', module: 'module', symbol: 'class / function', data: 'data', cmd: 'run', ui: 'gui', external: 'library', step: 'step', sticky: 'note' }[k] || k;
+  }
+  // edges + labels
+  edges.forEach(e => {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('class', 'edge e-' + e.kind);
+    p.setAttribute('marker-end', `url(#m-${e.kind})`);
+    if (e.both) p.setAttribute('marker-start', `url(#m-${e.kind})`);
+    svg.appendChild(p); e.el = p;
+    if (e.label) {
+      const l = document.createElement('div');
+      l.className = 'elabel l-' + e.kind; l.innerHTML = e.label; labelsL.appendChild(l); e.lel = l;
+    }
+  });
+
+  /* ---- layout ---- */
+  function measure() { nodes.forEach(n => { n.w = n.el.offsetWidth; n.h = n.el.offsetHeight; }); }
+  function placeNodes() { nodes.forEach(n => { n.el.style.left = n.ax + 'px'; n.el.style.top = n.ay + 'px'; }); }
+  const PAD = 42;
+  function layoutFrames() {
+    frames.forEach(f => {
+      const ms = nodes.filter(n => n.frame === f.id);
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      ms.forEach(n => { x0 = Math.min(x0, n.ax); y0 = Math.min(y0, n.ay); x1 = Math.max(x1, n.ax + n.w); y1 = Math.max(y1, n.ay + n.h); });
+      if (!ms.length) { x0 = f.x; y0 = f.y; x1 = f.x + 400; y1 = f.y + 200; }
+      f.rx = x0 - PAD; f.ry = y0 - PAD; f.rw = x1 - x0 + 2 * PAD; f.rh = y1 - y0 + 2 * PAD;
+      Object.assign(f.el.style, { left: f.rx + 'px', top: f.ry + 'px', width: f.rw + 'px', height: f.rh + 'px' });
+    });
+  }
+  const NORM = { l: [-1, 0], r: [1, 0], t: [0, -1], b: [0, 1] };
+  function pickSides(a, b) {
+    const gx = Math.max(b.ax - (a.ax + a.w), a.ax - (b.ax + b.w));
+    const gy = Math.max(b.ay - (a.ay + a.h), a.ay - (b.ay + b.h));
+    if (gx >= gy) return b.ax + b.w / 2 >= a.ax + a.w / 2 ? ['r', 'l'] : ['l', 'r'];
+    return b.ay + b.h / 2 >= a.ay + a.h / 2 ? ['b', 't'] : ['t', 'b'];
+  }
+  function routeEdges() {
+    const ports = new Map(); // key nodeId|side -> [{e, end, other}]
+    edges.forEach(e => {
+      const a = nodeById.get(e.from), b = nodeById.get(e.to);
+      const [sa, sb] = pickSides(a, b);
+      e.sa = e.fs || sa; e.sb = e.ts || sb;
+      const push = (n, s, end, other) => { const k = n.id + '|' + s; if (!ports.has(k)) ports.set(k, []); ports.get(k).push({ e, end, other }); };
+      push(a, e.sa, 'a', b); push(b, e.sb, 'b', a);
+    });
+    ports.forEach((list, k) => {
+      const [id, s] = k.split('|'); const n = nodeById.get(id);
+      const horiz = s === 't' || s === 'b';
+      list.sort((p, q) => horiz ? (p.other.ax + p.other.w / 2) - (q.other.ax + q.other.w / 2) : (p.other.ay + p.other.h / 2) - (q.other.ay + q.other.h / 2));
+      const m = list.length;
+      list.forEach((p, i) => {
+        const t = (i + 1) / (m + 1);
+        const spread = horiz ? Math.min(n.w * 0.8, 40 * (m + 1)) : Math.min(n.h * 0.8, 26 * (m + 1));
+        const off = (t - 0.5) * spread;
+        let x, y;
+        if (s === 'l') { x = n.ax; y = n.ay + n.h / 2 + off; }
+        else if (s === 'r') { x = n.ax + n.w; y = n.ay + n.h / 2 + off; }
+        else if (s === 't') { x = n.ax + n.w / 2 + off; y = n.ay; }
+        else { x = n.ax + n.w / 2 + off; y = n.ay + n.h; }
+        p.e[p.end === 'a' ? 'pa' : 'pb'] = [x, y];
+      });
+    });
+    edges.forEach(e => {
+      const [x0, y0] = e.pa, [x3, y3] = e.pb;
+      const n0 = NORM[e.sa], n3 = NORM[e.sb];
+      const d = Math.hypot(x3 - x0, y3 - y0);
+      const k = e.k || clamp(d * 0.42, 28, 260);
+      let x1 = x0 + n0[0] * k, y1 = y0 + n0[1] * k, x2 = x3 + n3[0] * k, y2 = y3 + n3[1] * k;
+      if (e.curve) {
+        const ux = (x3 - x0) / (d || 1), uy = (y3 - y0) / (d || 1);
+        x1 += -uy * e.curve; y1 += ux * e.curve; x2 += -uy * e.curve; y2 += ux * e.curve;
+      }
+      // pull the end back a little so the arrowhead tip touches the card edge
+      e.el.setAttribute('d', `M${x0},${y0} C${x1},${y1} ${x2},${y2} ${x3 - n3[0] * 1},${y3 - n3[1] * 1}`);
+      if (e.lel) {
+        const bx = .125 * x0 + .375 * x1 + .375 * x2 + .125 * x3, by = .125 * y0 + .375 * y1 + .375 * y2 + .125 * y3;
+        e.lel.style.left = bx + 'px'; e.lel.style.top = by + 'px';
+      }
+    });
+  }
+  let bbox = { x0: 0, y0: 0, x1: 1, y1: 1 };
+  function computeBBox() {
+    bbox = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    frames.forEach(f => { bbox.x0 = Math.min(bbox.x0, f.rx); bbox.y0 = Math.min(bbox.y0, f.ry - 50); bbox.x1 = Math.max(bbox.x1, f.rx + f.rw); bbox.y1 = Math.max(bbox.y1, f.ry + f.rh); });
+  }
+  function relayout() { placeNodes(); layoutFrames(); routeEdges(); computeBBox(); drawMinimap(); }
+
+  /* ---- view ---- */
+  const MIN_S = 0.06, MAX_S = 2.6;
+  function apply() {
+    world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+    const inv = clamp(0.85 / view.s, 1, 7);
+    world.style.setProperty('--inv', inv.toFixed(3));
+    // a scaled-up title must not run into the next frame
+    frames.forEach(f => { if (f.titleEl && f.rw) f.titleEl.style.maxWidth = (f.rw / inv) + 'px'; });
+    world.classList.toggle('far', view.s < 0.42);
+    world.classList.toggle('very-far', view.s < 0.2);
+    vp.style.backgroundSize = `${22 * view.s}px ${22 * view.s}px`;
+    vp.style.backgroundPosition = `${view.x}px ${view.y}px`;
+    $('#zoomlbl').textContent = Math.round(view.s * 100) + '%';
+    drawMinimapView(); markActiveFrame();
+  }
+  function vpSize() { return [vp.clientWidth, vp.clientHeight]; }
+  function zoomAt(cx, cy, f) {
+    const s2 = clamp(view.s * f, MIN_S, MAX_S);
+    const wx = (cx - view.x) / view.s, wy = (cy - view.y) / view.s;
+    view.x = cx - wx * s2; view.y = cy - wy * s2; view.s = s2; apply();
+  }
+  // safe area: keep targets clear of the top bar, sidebar and panel
+  function safeArea() {
+    const [w, h] = vpSize();
+    let l = 0, r = 0, t = 70, b = 10;
+    if (w > 900) {
+      if (!document.body.classList.contains('export')) {
+        l = $('#sidebar').style.display === 'none' ? 0 : 270;
+        if ($('#panel').classList.contains('open')) r = 445;
+        if ($('#tourbar').classList.contains('on')) b = $('#tourbar').offsetHeight + 24;
+      }
+    }
+    if (document.body.classList.contains('export')) { l = r = b = 0; t = 0; }
+    return { l, r, t, b, w, h };
+  }
+  function targetForRect(x0, y0, x1, y1, pad = 60, maxS = 1.25) {
+    const a = safeArea();
+    const aw = a.w - a.l - a.r, ah = a.h - a.t - a.b;
+    const s = clamp(Math.min(aw / (x1 - x0 + 2 * pad), ah / (y1 - y0 + 2 * pad)), MIN_S, maxS);
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    return { s, x: a.l + aw / 2 - cx * s, y: a.t + ah / 2 - cy * s };
+  }
+  let anim = null;
+  function flyTo(tgt, ms = 520) {
+    if (anim) cancelAnimationFrame(anim);
+    const [w, h] = vpSize();
+    const s0 = view.s, s1 = tgt.s;
+    const c0 = [(w / 2 - view.x) / s0, (h / 2 - view.y) / s0], c1 = [(w / 2 - tgt.x) / s1, (h / 2 - tgt.y) / s1];
+    const t0 = performance.now();
+    const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    if (ms <= 0 || matchMedia('(prefers-reduced-motion: reduce)').matches) { Object.assign(view, tgt); apply(); return; }
+    const step = now => {
+      const t = clamp((now - t0) / ms, 0, 1), k = ease(t);
+      const s = Math.exp(Math.log(s0) + (Math.log(s1) - Math.log(s0)) * k);
+      // dip out a little on long flights so the move reads as a move
+      const dist = Math.hypot(c1[0] - c0[0], c1[1] - c0[1]) * Math.min(s0, s1);
+      const dip = dist > w ? 1 - 0.35 * Math.sin(Math.PI * k) : 1;
+      const cx = c0[0] + (c1[0] - c0[0]) * k, cy = c0[1] + (c1[1] - c0[1]) * k;
+      view.s = s * dip; view.x = w / 2 - cx * view.s; view.y = h / 2 - cy * view.s;
+      apply();
+      if (t < 1) anim = requestAnimationFrame(step); else { anim = null; Object.assign(view, tgt); apply(); }
+    };
+    anim = requestAnimationFrame(step);
+  }
+  const fitAll = (ms) => flyTo(targetForRect(bbox.x0, bbox.y0, bbox.x1, bbox.y1, 40, 1), ms);
+  const flyToFrame = (f, ms) => flyTo(targetForRect(f.rx, f.ry - 46 * clamp(0.85 / view.s, 1, 2), f.rx + f.rw, f.ry + f.rh, 30, 1.15), ms);
+  function flyToNodes(ids, ms, maxS = 1.1) {
+    const ns = ids.map(id => nodeById.get(id)).filter(Boolean);
+    if (!ns.length) return;
+    const x0 = Math.min(...ns.map(n => n.ax)), y0 = Math.min(...ns.map(n => n.ay));
+    const x1 = Math.max(...ns.map(n => n.ax + n.w)), y1 = Math.max(...ns.map(n => n.ay + n.h));
+    flyTo(targetForRect(x0, y0, x1, y1, 90, maxS), ms);
+  }
+
+  /* ---- active frame in the sidebar ---- */
+  const fl = $('#framelist');
+  frames.forEach(f => {
+    const a = document.createElement('a');
+    a.innerHTML = `<span class="num" style="background:${f.color}">${f.idx}</span><span>${esc(f.title)}</span>`;
+    a.onclick = () => flyToFrame(f); fl.appendChild(a); f.link = a;
+  });
+  function markActiveFrame() {
+    const [w, h] = vpSize();
+    const cx = (w / 2 - view.x) / view.s, cy = (h / 2 - view.y) / view.s;
+    let best = null, bd = Infinity;
+    frames.forEach(f => {
+      const dx = Math.max(f.rx - cx, 0, cx - (f.rx + f.rw)), dy = Math.max(f.ry - cy, 0, cy - (f.ry + f.rh));
+      const d = Math.hypot(dx, dy);
+      if (d < bd) { bd = d; best = f; }
+    });
+    frames.forEach(f => f.link && f.link.classList.toggle('active', f === best && view.s > 0.25));
+  }
+
+  /* ---- highlight ---- */
+  let selected = null, searchHits = null;
+  function highlight(ids, edgeSet) {
+    world.classList.add('dimmed');
+    nodes.forEach(n => n.el.classList.toggle('hl', ids.has(n.id)));
+    edges.forEach(e => { const on = edgeSet ? edgeSet.has(e) : (ids.has(e.from) && ids.has(e.to)); e.el.classList.toggle('hl', on); e.lel && e.lel.classList.toggle('hl', on); });
+  }
+  function clearHighlight() {
+    world.classList.remove('dimmed');
+    nodes.forEach(n => n.el.classList.remove('hl'));
+    edges.forEach(e => { e.el.classList.remove('hl'); e.lel && e.lel.classList.remove('hl'); });
+  }
+  function neighbourhood(id) {
+    const ids = new Set([id]), es = new Set();
+    adj.get(id).forEach(e => { ids.add(e.from); ids.add(e.to); es.add(e); });
+    return [ids, es];
+  }
+  function restoreHighlight() {
+    if (selected) { const [i, e] = neighbourhood(selected.id); highlight(i, e); }
+    else if (tourOn && tourFocus) highlight(tourFocus, null);
+    else if (searchHits) highlight(searchHits, new Set());
+    else clearHighlight();
+  }
+
+  /* ---- panel ---- */
+  const panel = $('#panel');
+  function select(n, fly) {
+    if (selected) selected.el.classList.remove('sel');
+    selected = n;
+    if (!n) { panel.classList.remove('open'); restoreHighlight(); return; }
+    n.el.classList.add('sel');
+    const [ids, es] = neighbourhood(n.id); highlight(ids, es);
+    panel.className = 'chrome open ' + (n.kind === 'sticky' ? 'k-data' : 'k-' + n.kind);
+    $('#p-kind').textContent = KINDS[n.kind] || n.kind;
+    $('#p-title').innerHTML = n.title;
+    const f = frameById.get(n.frame);
+    $('#p-frame').innerHTML = f ? `Frame ${f.idx} &middot; ${esc(f.title)}` : '';
+    $('#p-frame').onclick = () => f && flyToFrame(f);
+    $('#p-sub').innerHTML = n.body ? (n.sub || '') : '';
+    $('#p-body').innerHTML = n.body || (n.sub ? `<p>${n.sub}</p>` : '');
+    if (n.kind === 'cmd') {
+      // the command itself, as plain text, with a copy button
+      const tmp = document.createElement('div');
+      tmp.innerHTML = n.title.replace(/<br\s*\/?>/g, '\n');
+      const text = tmp.textContent;
+      const box = document.createElement('div');
+      box.className = 'p-copy';
+      box.innerHTML = `<pre></pre><button class="btn">Copy command</button>`;
+      box.querySelector('pre').textContent = text;
+      const b = box.querySelector('button');
+      b.onclick = () => (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+        .then(() => { b.textContent = 'Copied'; }, () => { b.textContent = 'Copy not available'; });
+      $('#p-body').prepend(box);
+    }
+    const files = n.files || [];
+    $('#p-files-wrap').style.display = files.length ? '' : 'none';
+    $('#p-files').innerHTML = files.map(([p, line, lbl]) => {
+      const href = vscodeLink(p, line);
+      return `<li><span class="path">${esc(p)}${line ? ':' + line : ''}${lbl ? `<span class="lbl">${esc(lbl)}</span>` : ''}</span>` +
+        (href ? `<a href="${href}" title="Open in VS Code">VS Code</a>` : '') +
+        `<button data-copy="${esc(p + (line ? ':' + line : ''))}" title="Copy path">copy</button></li>`;
+    }).join('');
+    $('#p-files').querySelectorAll('button[data-copy]').forEach(b => b.onclick = () => {
+      const txt = b.dataset.copy;
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => { b.textContent = 'copied'; }, () => { b.textContent = 'n/a'; });
+      setTimeout(() => { b.textContent = 'copy'; }, 1200);
+    });
+    const links = adj.get(n.id);
+    $('#p-links-wrap').style.display = links.length ? '' : 'none';
+    $('#p-links').innerHTML = links.map(e => {
+      const out = e.from === n.id, other = nodeById.get(out ? e.to : e.from);
+      return `<li data-id="${other.id}"><span class="dir">${out ? '&rarr;' : '&larr;'}</span><span><span class="nm">${stripTags(other.title)}</span> ${e.label ? `<span class="el">(${stripTags(e.label)})</span>` : ''}</span></li>`;
+    }).join('');
+    $('#p-links').querySelectorAll('li').forEach(li => li.onclick = () => { const o = nodeById.get(li.dataset.id); select(o); flyToNodes([o.id], 450, view.s > 0.9 ? view.s : 0.9); });
+    if (fly) flyToNodes([n.id], 450, Math.max(view.s, 0.85));
+  }
+  const stripTags = s => String(s || '').replace(/<[^>]+>/g, '');
+  $('#panel-close').onclick = () => select(null);
+
+  /* ---- pointer: pan, drag cards, click ---- */
+  let drag = null;
+  vp.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0 && ev.button !== 1) return;
+    const nel = ev.target.closest('.node');
+    const n = nel ? nodeById.get(nel.dataset.id) : null;
+    drag = { id: ev.pointerId, sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, n, nx: n ? n.ax : 0, ny: n ? n.ay : 0, moved: false, middle: ev.button === 1 };
+    vp.setPointerCapture(ev.pointerId);
+    if (!n || drag.middle) vp.classList.add('panning');
+    if (anim) { cancelAnimationFrame(anim); anim = null; }
+  });
+  let raf = 0;
+  vp.addEventListener('pointermove', ev => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
+    if (!drag.moved && Math.hypot(dx, dy) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    if (drag.n && !drag.middle && drag.n.kind !== 'text') {
+      drag.n.ax = drag.nx + dx / view.s; drag.n.ay = drag.ny + dy / view.s;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; relayout(); });
+    } else { view.x = drag.vx + dx; view.y = drag.vy + dy; apply(); }
+  });
+  const endDrag = ev => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    vp.classList.remove('panning');
+    const d = drag; drag = null;
+    if (d.moved && d.n && !d.middle && d.n.kind !== 'text') {
+      const pos = store.get(POS_KEY) || {}; pos[d.n.id] = [Math.round(d.n.ax), Math.round(d.n.ay)]; store.set(POS_KEY, pos);
+    } else if (!d.moved) {
+      if (d.n && d.n.kind !== 'text') select(d.n); else select(null);
+    }
+  };
+  vp.addEventListener('pointerup', endDrag);
+  vp.addEventListener('pointercancel', endDrag);
+  vp.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    if (anim) { cancelAnimationFrame(anim); anim = null; }
+    if (!ev.ctrlKey && ev.deltaX !== 0 && ev.deltaMode === 0) { view.x -= ev.deltaX; view.y -= ev.deltaY; apply(); return; }
+    const unit = ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 400 : 1;
+    const f = Math.exp(-ev.deltaY * unit * (ev.ctrlKey ? 0.012 : 0.0016));
+    zoomAt(ev.clientX, ev.clientY, f);
+  }, { passive: false });
+  // hover highlight (only when nothing pinned)
+  nodesL.addEventListener('mouseover', ev => {
+    const nel = ev.target.closest('.node'); if (!nel || selected || drag || tourOn) return;
+    const n = nodeById.get(nel.dataset.id); if (!n || n.kind === 'text') return;
+    const [ids, es] = neighbourhood(n.id); highlight(ids, es);
+  });
+  nodesL.addEventListener('mouseout', ev => {
+    const nel = ev.target.closest('.node'); if (!nel || selected || drag || tourOn) return;
+    if (ev.relatedTarget && nel.contains(ev.relatedTarget)) return;
+    restoreHighlight();
+  });
+
+  /* ---- search ---- */
+  const search = $('#search');
+  let hitList = [], hitIdx = -1;
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    if (!q) { searchHits = null; hitList = []; $('#searchinfo').textContent = ''; restoreHighlight(); return; }
+    hitList = nodes.filter(n => [n.title, n.sub, n.body, n.kicker, ...(n.files || []).map(f => f[0])].join(' ').replace(/<[^>]+>/g, ' ').toLowerCase().includes(q));
+    searchHits = new Set(hitList.map(n => n.id)); hitIdx = -1;
+    $('#searchinfo').textContent = hitList.length + (hitList.length === 1 ? ' match' : ' matches');
+    if (!selected) restoreHighlight();
+  });
+  search.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && hitList.length) { hitIdx = (hitIdx + 1) % hitList.length; select(hitList[hitIdx], true); }
+    if (ev.key === 'Escape') { search.value = ''; search.dispatchEvent(new Event('input')); search.blur(); }
+    ev.stopPropagation();
+  });
+
+  /* ---- tour ---- */
+  let tourOn = false, tourI = 0, tourFocus = null;
+  const tour = BOARD.tour;
+  function showTour(i) {
+    tourI = clamp(i, 0, tour.length - 1); const st = tour[tourI];
+    tourOn = true; $('#tourbar').classList.add('on');
+    $('#t-step').textContent = `Step ${tourI + 1} of ${tour.length}`;
+    $('#t-title').innerHTML = st.title; $('#t-text').innerHTML = st.text;
+    $('#t-prev').disabled = tourI === 0; $('#t-next').textContent = tourI === tour.length - 1 ? 'Finish' : 'Next';
+    if (selected) { selected.el.classList.remove('sel'); selected = null; panel.classList.remove('open'); }
+    tourFocus = st.focus ? new Set(st.focus) : null;
+    restoreHighlight();
+    requestAnimationFrame(() => {
+      if (st.focus) flyToNodes(st.focus, 650, st.maxScale || 1.05);
+      else if (st.frame) flyToFrame(frameById.get(st.frame), 650);
+      else fitAll(650);
+    });
+  }
+  function endTour() { tourOn = false; tourFocus = null; $('#tourbar').classList.remove('on'); restoreHighlight(); }
+  $('#btn-tour').onclick = () => tourOn ? endTour() : showTour(0);
+  $('#t-prev').onclick = () => showTour(tourI - 1);
+  $('#t-next').onclick = () => tourI === tour.length - 1 ? endTour() : showTour(tourI + 1);
+  $('#t-close').onclick = endTour;
+
+  /* ---- buttons ---- */
+  $('#btn-fit').onclick = () => fitAll();
+  $('#btn-reset').onclick = () => { store.del(POS_KEY); nodes.forEach(n => { n.ax = n.bx; n.ay = n.by; }); relayout(); };
+  $('#btn-help').onclick = () => $('#help').classList.toggle('on');
+  $('#help-close').onclick = () => $('#help').classList.remove('on');
+  $('#btn-frames').onclick = () => {
+    const sb = $('#sidebar');
+    if (innerWidth <= 900) sb.classList.toggle('force');
+    else sb.style.display = sb.style.display === 'none' ? '' : 'none';
+  };
+  const legend = $('#legend');
+  $('#legend-body').innerHTML =
+    Object.entries(KINDS).map(([k, v]) => k === 'sticky'
+      ? `<div class="row"><span class="sw" style="background:var(--sticky)"></span>${v}</div>`
+      : `<div class="row"><span class="sw" style="background:var(--k-${k})"></span>${v}</div>`).join('') +
+    '<div style="height:6px"></div>' +
+    Object.entries(EDGE_KINDS).map(([k, v]) =>
+      `<div class="row"><svg width="34" height="10"><path d="M1,5 L26,5" class="e-${k}" style="stroke-width:2;fill:none;animation:none"/><path d="M25,1 L33,5 L25,9 z" style="fill:var(--e-${k})"/></svg>${v}</div>`).join('');
+  const legCollapsed = store.get(LEG_KEY);
+  if (legCollapsed) { legend.classList.add('collapsed'); $('#legend-t').textContent = '+'; }
+  $('#legend-h').onclick = () => { const c = legend.classList.toggle('collapsed'); $('#legend-t').innerHTML = c ? '+' : '&#8211;'; store.set(LEG_KEY, c); };
+
+  /* ---- keyboard ---- */
+  addEventListener('keydown', ev => {
+    if (ev.target === search) return;
+    const k = ev.key;
+    if (k === 'Escape') {
+      if ($('#help').classList.contains('on')) $('#help').classList.remove('on');
+      else if (selected) select(null);
+      else if (tourOn) endTour();
+      else if (searchHits) { search.value = ''; search.dispatchEvent(new Event('input')); }
+      return;
+    }
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (tourOn && (k === 'ArrowRight' || k === 'PageDown' || k === ' ')) { ev.preventDefault(); $('#t-next').click(); return; }
+    if (tourOn && (k === 'ArrowLeft' || k === 'PageUp')) { ev.preventDefault(); if (tourI > 0) showTour(tourI - 1); return; }
+    const code = ev.code || '';
+    if (/^Digit[0-9]$/.test(code)) {
+      const d = +code.slice(5);
+      if (d === 0 && !ev.shiftKey) { fitAll(); return; }
+      const idx = ev.shiftKey ? 10 + d - 1 : d;
+      const f = frames[idx - 1]; if (f) flyToFrame(f); return;
+    }
+    if (k === '/') { ev.preventDefault(); search.focus(); search.select(); return; }
+    if (k === 't' || k === 'T') { $('#btn-tour').click(); return; }
+    if (k === '?') { $('#btn-help').click(); return; }
+    const [w, h] = vpSize();
+    if (k === '+' || k === '=') zoomAt(w / 2, h / 2, 1.2);
+    else if (k === '-' || k === '_') zoomAt(w / 2, h / 2, 1 / 1.2);
+    else if (k === 'ArrowLeft') { view.x += 80; apply(); }
+    else if (k === 'ArrowRight') { view.x -= 80; apply(); }
+    else if (k === 'ArrowUp') { view.y += 80; apply(); }
+    else if (k === 'ArrowDown') { view.y -= 80; apply(); }
+  });
+
+  /* ---- minimap ---- */
+  const mmWrap = $('#minimap'), mm = $('#mm');
+  let mmT = null;
+  function drawMinimap() {
+    const r = mmWrap.getBoundingClientRect(); if (!r.width) return;
+    const dpr = devicePixelRatio || 1;
+    mm.width = r.width * dpr; mm.height = r.height * dpr;
+    const ctx = mm.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, r.width, r.height);
+    const pad = 8, bw = bbox.x1 - bbox.x0, bh = bbox.y1 - bbox.y0;
+    const s = Math.min((r.width - 2 * pad) / bw, (r.height - 2 * pad) / bh);
+    const ox = pad + (r.width - 2 * pad - bw * s) / 2 - bbox.x0 * s, oy = pad + (r.height - 2 * pad - bh * s) / 2 - bbox.y0 * s;
+    mmT = { s, ox, oy };
+    const css = getComputedStyle(document.documentElement);
+    frames.forEach(f => {
+      ctx.fillStyle = css.getPropertyValue('--frame').trim(); ctx.strokeStyle = f.color; ctx.lineWidth = 1;
+      ctx.fillRect(ox + f.rx * s, oy + f.ry * s, f.rw * s, f.rh * s); ctx.strokeRect(ox + f.rx * s, oy + f.ry * s, f.rw * s, f.rh * s);
+      ctx.fillStyle = f.color; ctx.fillRect(ox + f.rx * s, oy + f.ry * s - 3, Math.min(14, f.rw * s), 3);
+    });
+    nodes.forEach(n => {
+      if (n.kind === 'text') return;
+      ctx.fillStyle = n.kind === 'sticky' ? '#e8c600' : css.getPropertyValue('--k-' + n.kind).trim() || '#888';
+      ctx.globalAlpha = .55; ctx.fillRect(ox + n.ax * s, oy + n.ay * s, Math.max(1, n.w * s), Math.max(1, n.h * s)); ctx.globalAlpha = 1;
+    });
+    drawMinimapView();
+  }
+  const mmView = document.createElement('div');
+  Object.assign(mmView.style, { position: 'absolute', border: '2px solid var(--accent)', borderRadius: '3px', pointerEvents: 'none', background: 'rgba(47,111,223,.08)' });
+  mmWrap.appendChild(mmView);
+  function drawMinimapView() {
+    if (!mmT) return;
+    const [w, h] = vpSize(); const { s, ox, oy } = mmT;
+    const x0 = -view.x / view.s, y0 = -view.y / view.s, x1 = (w - view.x) / view.s, y1 = (h - view.y) / view.s;
+    const r = mmWrap.getBoundingClientRect();
+    const L = clamp(ox + x0 * s, 0, r.width), T = clamp(oy + y0 * s, 0, r.height), R = clamp(ox + x1 * s, 0, r.width), B = clamp(oy + y1 * s, 0, r.height);
+    Object.assign(mmView.style, { left: L + 'px', top: T + 'px', width: Math.max(4, R - L) + 'px', height: Math.max(4, B - T) + 'px' });
+  }
+  let mmDrag = false;
+  const mmGo = ev => {
+    const r = mmWrap.getBoundingClientRect(); const { s, ox, oy } = mmT; const [w, h] = vpSize();
+    const wx = (ev.clientX - r.left - ox) / s, wy = (ev.clientY - r.top - oy) / s;
+    view.x = w / 2 - wx * view.s; view.y = h / 2 - wy * view.s; apply();
+  };
+  mmWrap.addEventListener('pointerdown', ev => { mmDrag = true; mmWrap.setPointerCapture(ev.pointerId); mmGo(ev); ev.stopPropagation(); });
+  mmWrap.addEventListener('pointermove', ev => { if (mmDrag) mmGo(ev); });
+  mmWrap.addEventListener('pointerup', () => { mmDrag = false; });
+
+  /* ---- start ---- */
+  function start() {
+    measure(); relayout();
+    const hash = new URLSearchParams(location.hash.slice(1));
+    const exp = hash.get('export'), fr = hash.get('frame');
+    if (exp) {
+      document.body.classList.add('export');
+      const f = frameById.get(exp);
+      if (f) flyToFrame(f, 0); else fitAll(0);
+      document.title = 'export ' + exp;
+      return;
+    }
+    if (fr && frameById.get(fr)) flyToFrame(frameById.get(fr), 0);
+    else fitAll(0);
+    if (!store.get('structsept-board-seen')) { $('#help').classList.add('on'); store.set('structsept-board-seen', 1); }
+  }
+  addEventListener('resize', () => { drawMinimap(); apply(); });
+  // images change card heights once loaded
+  const imgs = [...document.querySelectorAll('#nodes img')];
+  imgs.forEach(i => { if (!i.complete) i.addEventListener('load', () => { measure(); relayout(); }, { once: true }); });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(start); else start();
+  window.__board = { view, nodes, edges, frames, fitAll, flyToFrame, select: id => select(nodeById.get(id), true) };
+})();
+</script>
+</body>
+</html>
