@@ -79,6 +79,34 @@ def list_datasets(data_root):
     return datasets
 
 
+def data_root_for(folder):
+    """The data root a dataset picker should list, for a folder the user picked.
+
+    A data root holds ``SdfSamples/<dataset>/`` and ``splits/<dataset>.json``
+    - the layout DeepSDF trains from and ``datagen --data-root`` writes - and
+    it is the root, not a dataset folder, that a run's specs name as
+    ``DataSource``. Picking the ``SdfSamples`` folder, one dataset inside it
+    or one class folder of a dataset is understood as picking its data root,
+    with that dataset to preselect. Any other folder is taken as it is; if it
+    holds no ``SdfSamples/``, the picker shows that it is empty.
+
+    Returns
+    -------
+    (pathlib.Path, str or None)
+        The data root and the dataset name to preselect, if any.
+    """
+    folder = pathlib.Path(folder)
+    if (folder / SDF_SAMPLES_DIR).is_dir():
+        return folder, None
+    if folder.name == SDF_SAMPLES_DIR:
+        return folder.parent, None
+    if folder.parent.name == SDF_SAMPLES_DIR:
+        return folder.parent.parent, folder.name
+    if folder.parent.parent.name == SDF_SAMPLES_DIR:
+        return folder.parents[2], folder.parent.name
+    return folder, None
+
+
 def geom_dimension(dataset_dir) -> int:
     """Coordinates per sample in a dataset: 2 for ``(x, y, phi)`` rows, else 3.
 

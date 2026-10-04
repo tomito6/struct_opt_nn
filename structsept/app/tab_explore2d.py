@@ -6,6 +6,7 @@ vector, so there is no lattice and no control net: the design variables are
 the components of lambda itself, one slider each. Moving them shows how
 lambda_1, lambda_2, ... change the shape.
 
+    which folder of runs               -> header, Browse... (remembered)
     which decoder                      -> header
     the design variables               -> left, one slider per component of λ
     what shape is this now             -> centre, f_theta as material/void
@@ -19,16 +20,19 @@ from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-from structsept.app import models, run_editor, runtime, viz, widgets
+from structsept.app import folders, models, run_editor, runtime, viz, widgets
 
 DEBOUNCE_MS = 120
 SETTLE_MS = 400
 DEFAULT_RES = 128
 RES_CHOICES = ("96", "128", "160", "192")
+# "Folder" and "Decoder" share a width, so the Browse... button and the
+# picker start in the same column
+HEADER_LABEL_WIDTH = 8
 
 
 def _sub(n):
@@ -41,8 +45,13 @@ def _sub(n):
 
 
 def build(st, parent, runs_dir):
-    """Populate the Explore 2-D tab. ``parent`` is an empty padded frame."""
-    st["e2_runs_dir"] = Path(runs_dir)
+    """Populate the Explore 2-D tab. ``parent`` is an empty padded frame.
+
+    ``runs_dir`` is the default folder of the decoder picker; the folder
+    last picked with Browse... wins over it while it still exists.
+    """
+    st["e2_runs_dir"] = folders.remembered(folders.EXPLORE2D_RUNS, runs_dir)
+    st["e2_folder_text"] = tk.StringVar(value="")
     # a run renamed or deleted anywhere in the app is re-read here too
     st.setdefault("run_listeners", []).append(lambda: refresh_models(st))
     st["e2_res"] = tk.StringVar(value=str(DEFAULT_RES))
@@ -88,9 +97,18 @@ def _place_sashes(st):
 def _build_header(st, parent, palette):
     outer, body = widgets.card(parent, palette)
     outer.pack(fill="x")
+    # the picker lists one folder of runs, not every run there is
+    widgets.folder_row(
+        body,
+        st["e2_folder_text"],
+        lambda: browse_folder(st),
+        label_width=HEADER_LABEL_WIDTH,
+    ).pack(fill="x", pady=(0, 6))
     row = ttk.Frame(body, style="Card.TFrame")
     row.pack(fill="x")
-    ttk.Label(row, text="Decoder", style="Card.TLabel").pack(side="left")
+    ttk.Label(row, text="Decoder", style="Card.TLabel", width=HEADER_LABEL_WIDTH).pack(
+        side="left"
+    )
     st["e2_model_choice"] = tk.StringVar(value="")
     st["e2_combo_model"] = ttk.Combobox(
         row, state="readonly", width=40, textvariable=st["e2_model_choice"]
@@ -235,6 +253,7 @@ def _build_footer(st, parent, palette):
 
 
 def refresh_models(st):
+    """Re-read the decoders of the current folder into the picker."""
     entries = models.list_models(st["e2_runs_dir"], geom_dimension=2)
     labels = {}
     for entry in entries:
@@ -247,11 +266,70 @@ def refresh_models(st):
     combo.configure(values=list(labels), width=widgets.combo_width(labels))
     if labels and combo.get() not in labels:
         combo.set(next(iter(labels)))
+    elif not labels:
+        # not the last folder's decoder, which Load could no longer find
+        combo.set("")
+    n = len(labels)
+    st["e2_folder_text"].set(
+        f"{folders.display(st['e2_runs_dir'])}  ·  "
+        + (f"{n} decoder{'s' if n != 1 else ''}" if n else "no 2-D decoder here")
+    )
     _update_edit_button(st)
 
 
-def select_model(st, name):
-    """Point the picker at a run by name; used by the Train tab."""
+def browse_folder(st):
+    """Browse...: pick the folder of runs the decoder picker lists."""
+    chosen = filedialog.askdirectory(
+        parent=st["root"],
+        title="Folder with 2-D decoders (training runs)",
+        initialdir=str(st["e2_runs_dir"]),
+        mustexist=True,
+    )
+    if not chosen:
+        return False
+    set_folder(st, chosen)
+    return True
+
+
+def set_folder(st, folder):
+    """List the decoders of ``folder`` from now on, and remember it.
+
+    Everything that reads runs on this tab - Load, Edit..., Refresh, the
+    listeners fired by a rename elsewhere - goes through ``st["e2_runs_dir"]``,
+    so this is the only place the folder changes. A run directory picked by
+    mistake lists its parent, with that run selected.
+    """
+    folder, run = models.runs_folder(folder)
+    st["e2_runs_dir"] = folder
+    folders.remember(folders.EXPLORE2D_RUNS, folder)
+    refresh_models(st)
+    if run is not None:
+        select_model(st, run)
+    n = len(st["e2_models"])
+    widgets.append(
+        st["e2_log"],
+        (
+            f"Decoders from {folder}: {n} found."
+            if n
+            else f"No 2-D decoder in {folder}. A decoder is a run directory "
+            "(specs.json + ModelParameters/latest.pth) directly inside the folder."
+        ),
+    )
+
+
+def select_model(st, name, runs_dir=None):
+    """Point the picker at a run by name; used by the Train tab.
+
+    ``runs_dir`` is the folder the run lives in. When the picker lists a
+    different folder it moves there - but only if the run is a loadable
+    2-D decoder, so a run that cannot be opened here leaves the picker
+    where it was.
+    """
+    if runs_dir is not None and not folders.same(runs_dir, st["e2_runs_dir"]):
+        entries = models.list_models(runs_dir, geom_dimension=2)
+        if not any(entry.name == name for entry in entries):
+            return False
+        set_folder(st, runs_dir)
     for label, entry in st.get("e2_models", {}).items():
         if entry.name == name:
             st["e2_combo_model"].set(label)
@@ -271,15 +349,26 @@ def _edit_model(st):
     entry = st.get("e2_models", {}).get(st["e2_combo_model"].get())
     if entry is None or entry.source != "run":
         return None
+    # the run's own parent, not the folder setting: the one names the run
+    # that was picked, the other only where the picker looks now
     return run_editor.open_editor(
-        st, st["e2_runs_dir"], entry.name, on_done=lambda name: select_model(st, name)
+        st,
+        Path(entry.ref).parent,
+        entry.name,
+        on_done=lambda name: select_model(st, name),
     )
 
 
 def _update_stale(st):
     loaded = st.get("e2_loaded_choice")
     if loaded is not None:
-        changed = st["e2_model_choice"].get() != loaded
+        choice = st["e2_model_choice"].get()
+        entry = st.get("e2_models", {}).get(choice)
+        # by path too: two folders can each hold a run of the same name; and
+        # nothing to say when the folder now shown has no decoder to load
+        changed = entry is not None and (
+            choice != loaded or entry.ref != st["e2_entry"].ref
+        )
         st["e2_stale"].set("decoder changed - press Load to apply" if changed else "")
 
 

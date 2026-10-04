@@ -4,7 +4,9 @@ Step 2 of the offline pipeline. The dataset itself is produced elsewhere - see
 ``structsept.app.sdf_maker`` for meshes and the ``datagen`` package for
 parametric shapes - so this tab only picks one, states whether it is big
 enough for the requested latent dimension, runs the trainer and keeps a record
-of the runs that came out.
+of the runs that came out. The datasets listed are those of one data root -
+``data/`` unless another was picked with Browse... (remembered between
+launches, see ``folders``) - and the run trains from that root.
 
 The dataset also decides the decoder's input: 3-D samples ``(x, y, z, phi)``
 train the usual unit-cell decoder, explored on the Explore tab; 2-D samples
@@ -24,10 +26,11 @@ from __future__ import annotations
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from structsept.app import (
     datasets,
+    folders,
     hparam_window,
     hyperparams,
     run_editor,
@@ -46,7 +49,14 @@ PROGRESS_MS = 1500
 
 
 def build(st, parent, data_root, runs_dir):
-    st["tr_data_root"] = Path(data_root)
+    """Populate the Train tab. ``parent`` is an empty padded frame.
+
+    ``data_root`` is the default folder of the dataset picker; the folder
+    last picked with Browse... wins over it while it still exists. Runs are
+    always written to ``runs_dir``.
+    """
+    st["tr_data_root"] = folders.remembered(folders.TRAIN_DATA, data_root)
+    st["tr_data_text"] = tk.StringVar(value="")
     st["tr_runs_dir"] = Path(runs_dir)
     st["tr_hparams"] = hyperparams.defaults()
     # where the current set was loaded from ("Start from" / "Import sheet"),
@@ -89,6 +99,10 @@ def _build_dataset_card(st, parent, palette):
     outer, body = widgets.card(parent, palette, "Dataset", "signed-distance samples")
     outer.pack(side="left", fill="both", expand=True)
 
+    # the data root the picker lists: data/ or any other SdfSamples + splits
+    widgets.folder_row(body, st["tr_data_text"], lambda: browse_data_folder(st)).pack(
+        fill="x", pady=(0, 6)
+    )
     row = ttk.Frame(body, style="Card.TFrame")
     row.pack(fill="x")
     st["tr_combo"] = ttk.Combobox(row, state="readonly", width=34)
@@ -298,7 +312,9 @@ def _build_runs(st, parent, palette):
 
 
 def refresh_datasets(st):
-    rows = datasets.list_datasets(st["tr_data_root"])
+    """Re-read the datasets of the current data root into the picker."""
+    root = st["tr_data_root"]
+    rows = datasets.list_datasets(root)
     st["tr_datasets"] = {
         f"{r['name']} ({r['n_instances']} shapes, {_geom(r)}-D)": r for r in rows
     }
@@ -307,7 +323,63 @@ def refresh_datasets(st):
     combo.configure(values=values)
     if values and combo.get() not in st["tr_datasets"]:
         combo.set(values[0])
+    elif not values:
+        # not the last root's dataset, which Train could no longer find
+        combo.set("")
+    n = len(values)
+    if n:
+        found = f"{n} dataset{'s' if n != 1 else ''}"
+    elif (Path(root) / datasets.SDF_SAMPLES_DIR).is_dir():
+        found = "no dataset here"
+    else:
+        found = f"no {datasets.SDF_SAMPLES_DIR} folder here"
+    st["tr_data_text"].set(f"{folders.display(root)}  ·  {found}")
     _update_readiness(st)
+
+
+def browse_data_folder(st):
+    """Browse...: pick the data root the dataset picker lists."""
+    chosen = filedialog.askdirectory(
+        parent=st["root"],
+        title="Data folder (holds SdfSamples and splits)",
+        initialdir=str(st["tr_data_root"]),
+        mustexist=True,
+    )
+    if not chosen:
+        return False
+    set_data_folder(st, chosen)
+    return True
+
+
+def set_data_folder(st, folder):
+    """List the datasets under ``folder`` from now on, and remember it.
+
+    The data root is what a run's specs name as ``DataSource``, and the
+    trainer reads ``<root>/SdfSamples`` and ``<root>/splits`` from it - so a
+    pick of ``SdfSamples`` or of one dataset inside it is moved up to its
+    root (``datasets.data_root_for``), with that dataset selected.
+    """
+    root, name = datasets.data_root_for(folder)
+    st["tr_data_root"] = root
+    folders.remember(folders.TRAIN_DATA, root)
+    refresh_datasets(st)
+    if name is not None:
+        for label, row in st["tr_datasets"].items():
+            if row["name"] == name:
+                st["tr_combo"].set(label)
+                _update_readiness(st)
+                break
+    n = len(st["tr_datasets"])
+    widgets.append(
+        st["tr_log"],
+        (
+            f"Datasets from {root}: {n} found."
+            if n
+            else f"No dataset under {root}. A data folder holds "
+            f"{datasets.SDF_SAMPLES_DIR}/<dataset>/ and {datasets.SPLITS_DIR}/"
+            "<dataset>.json, the way datagen --data-root writes them."
+        ),
+    )
 
 
 def refresh_runs(st):
@@ -422,7 +494,7 @@ def delete_run(st) -> bool:
     if row is None:
         return False
     name = row["name"]
-    if run_editor.training_now(st, name):
+    if run_editor.training_now(st, name, st["tr_runs_dir"]):
         messagebox.showinfo(
             "Training", f"'{name}' is being trained right now; wait for it to finish."
         )
@@ -494,9 +566,10 @@ def _open_in_explore(st):
     name = row["name"]
     tab_explore.refresh_models(st)
     tab_explore2d.refresh_models(st)
-    if tab_explore.select_model(st, name):
+    # either explorer may be listing another folder; the run is in this one
+    if tab_explore.select_model(st, name, st["tr_runs_dir"]):
         st["notebook"].select(st["tab_frames"]["explore"])
-    elif tab_explore2d.select_model(st, name):
+    elif tab_explore2d.select_model(st, name, st["tr_runs_dir"]):
         st["notebook"].select(st["tab_frames"]["explore2d"])
     else:
         messagebox.showinfo(
@@ -520,7 +593,11 @@ def _update_readiness(st):
     _update_hp_summary(st)
     row = st.get("tr_datasets", {}).get(st["tr_combo"].get())
     if row is None:
-        st["tr_readiness"].set("No dataset found under data/SdfSamples.")
+        samples = Path(st["tr_data_root"]) / datasets.SDF_SAMPLES_DIR
+        st["tr_readiness"].set(
+            f"No dataset found under {folders.display(samples)}. "
+            "Browse... to another data folder, or build one in the SDF maker."
+        )
         st["tr_readiness_label"].configure(style="Card.Warning.TLabel")
         return
     # peek, never read_int: this runs from a trace on the spinbox itself
@@ -722,10 +799,13 @@ def _start_training(st):
     if (run_dir / "specs.json").is_file():
         if not messagebox.askyesno("Existing run", f"Overwrite '{name}'?"):
             return
+    # read now, on the Tk thread: a Browse... during the run must not change
+    # the root the worker hands the trainer
+    data_root = Path(st["tr_data_root"])
 
     def work(log):
         specs = training.write_specs(
-            run_dir, row["split"], st["tr_data_root"], hp, geom_dimension=geom
+            run_dir, row["split"], data_root, hp, geom_dimension=geom
         )
         log(f"specs: {specs}")
         log(
@@ -745,7 +825,7 @@ def _start_training(st):
             log(f"{issue.level}: {issue.message}")
         log(f"Training '{name}' on CPU, {epochs} epochs...")
         with runtime.signals_off():
-            info = training.train(run_dir, st["tr_data_root"], log=log)
+            info = training.train(run_dir, data_root, log=log)
         training.write_metadata(run_dir, dataset=row["name"], epochs=info["epochs"])
         log(f"Training finished in {info['seconds']:.0f} s -> {run_dir}")
 

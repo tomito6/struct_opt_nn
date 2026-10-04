@@ -126,6 +126,25 @@ def combo_width(labels, low=44, high=96) -> int:
     return int(min(high, max(low, longest + 2)))
 
 
+def folder_row(parent, textvariable, command, label="Folder", label_width=None):
+    """A row naming the folder a picker lists, with a Browse... button.
+
+    The button comes before the path, not after it: a path outside the repo
+    can be long enough to run off the card, and it is the path that may be
+    clipped, never the button. ``textvariable`` holds the path and whatever
+    the caller says about it (how many entries were found there).
+    """
+    row = ttk.Frame(parent, style="Card.TFrame")
+    ttk.Label(row, text=label, style="Card.TLabel", width=label_width).pack(side="left")
+    ttk.Button(row, text="Browse...", style="CardGhost.TButton", command=command).pack(
+        side="left", padx=(8, 8)
+    )
+    ttk.Label(row, textvariable=textvariable, style="Card.Subtle.TLabel").pack(
+        side="left"
+    )
+    return row
+
+
 def metric(parent, palette, label):
     """Flat tile showing one number. Returns the StringVar and the value label."""
     tile = ttk.Frame(parent, style="Card.TFrame")

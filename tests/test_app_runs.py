@@ -471,3 +471,206 @@ def test_load_hyperparameters_from_the_table(app, runs):
         st["tr_hparams"] = hyperparams.defaults()
         for key, var_name in tab_train.CARD_VARS.items():
             st[var_name].set(hyperparams.FIELD_BY_KEY[key].default)
+
+
+# --------------------------------------------------------------------------- #
+# which folder the pickers list
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def settings(tmp_path, monkeypatch):
+    """The remembered-folders file, moved into a temporary directory."""
+    from structsept.app import folders
+
+    path = tmp_path / "settings" / "app.json"
+    path.parent.mkdir()
+    monkeypatch.setattr(folders, "SETTINGS_PATH", path)
+    return path
+
+
+def _make_dataset(root, name, n=2):
+    """A minimal 2-D data root: SdfSamples/<name>/plate/*.npz + splits/<name>.json."""
+    import numpy as np
+
+    cls = root / "SdfSamples" / name / "plate"
+    cls.mkdir(parents=True)
+    rows = np.zeros((4, 3), dtype=np.float32)
+    rows[:2, 2], rows[2:, 2] = 0.1, -0.1
+    names = [f"s{i}" for i in range(n)]
+    for instance in names:
+        np.savez(cls / f"{instance}.npz", pos=rows[:2], neg=rows[2:])
+    (root / "splits").mkdir(exist_ok=True)
+    (root / "splits" / f"{name}.json").write_text(
+        json.dumps({name: {"plate": names}}), encoding="utf-8"
+    )
+
+
+def test_remembered_folders_fall_back_when_gone(settings, tmp_path):
+    from structsept.app import folders
+
+    default = tmp_path / "default"
+    assert folders.remembered("k", default) == default  # no file yet
+    picked = tmp_path / "picked"
+    picked.mkdir()
+    assert folders.remember("k", picked)
+    assert folders.remembered("k", default) == picked
+    assert folders.remembered("other", default) == default
+    picked.rmdir()
+    assert folders.remembered("k", default) == default  # deleted since
+    settings.write_text("{half a file", encoding="utf-8")
+    assert folders.remembered("k", default) == default
+    assert folders.remember("k", tmp_path)  # and a broken file is replaced
+
+    # inside the repo the path is stored relative, and printed that way
+    assert folders.remember("repo", folders.REPO_ROOT / "structsept")
+    assert json.loads(settings.read_text(encoding="utf-8"))["repo"] == "structsept"
+    assert folders.remembered("repo", default) == folders.REPO_ROOT / "structsept"
+    assert folders.display(folders.REPO_ROOT / "structsept") == "structsept"
+    assert folders.same(tmp_path / "a" / "..", tmp_path)
+
+
+def test_a_picked_run_or_dataset_folder_means_its_parent(tmp_path):
+    from structsept.app import datasets, models
+
+    run = _make_run(tmp_path, "alpha")
+    assert models.runs_folder(run) == (tmp_path, "alpha")
+    assert models.runs_folder(tmp_path) == (tmp_path, None)
+
+    root = tmp_path / "data"
+    _make_dataset(root, "plates")
+    samples = root / "SdfSamples"
+    assert datasets.data_root_for(root) == (root, None)
+    assert datasets.data_root_for(samples) == (root, None)
+    assert datasets.data_root_for(samples / "plates") == (root, "plates")
+    assert datasets.data_root_for(samples / "plates" / "plate") == (root, "plates")
+    assert datasets.data_root_for(tmp_path) == (tmp_path, None)
+
+
+def test_explore2d_lists_only_the_picked_folder(app, runs, settings):
+    """Browse... on Explore 2-D: one folder per family, and the app follows."""
+    from structsept.app import folders, tab_explore2d
+
+    st = app.app_state
+    holes, tris = runs / "holes", runs / "tris"
+    holes.mkdir()
+    tris.mkdir()
+    _make_run(holes, "hole_d2", trained=True)
+    _make_run(holes, "hole_d3", d=3, trained=True)
+    _make_run(tris, "tri_d1", d=1, trained=True)
+    shown = lambda: sorted(e.name for e in st["e2_models"].values())  # noqa: E731
+    try:
+        tab_explore2d.set_folder(st, holes)
+        assert shown() == ["hole_d2", "hole_d3"]
+        assert st["e2_folder_text"].get().endswith("2 decoders")
+        assert json.loads(settings.read_text(encoding="utf-8"))[
+            folders.EXPLORE2D_RUNS
+        ] == str(holes.resolve())
+
+        # a run directory picked by mistake lists its folder, run selected
+        tab_explore2d.set_folder(st, tris / "tri_d1")
+        assert folders.same(st["e2_runs_dir"], tris)
+        assert shown() == ["tri_d1"]
+        assert st["e2_models"][st["e2_combo_model"].get()].name == "tri_d1"
+
+        # an empty folder empties the picker instead of keeping a stale name
+        empty = runs / "empty"
+        empty.mkdir()
+        tab_explore2d.set_folder(st, empty)
+        assert st["e2_combo_model"].get() == "" and not st["e2_models"]
+        assert "no 2-D decoder here" in st["e2_folder_text"].get()
+
+        # Open on the Train tab takes Explore 2-D to the run's own folder...
+        assert tab_explore2d.select_model(st, "beta", runs)
+        assert folders.same(st["e2_runs_dir"], runs)
+        assert st["e2_models"][st["e2_combo_model"].get()].name == "beta"
+        # ...but not for a run it could not open (alpha has no checkpoint)
+        tab_explore2d.set_folder(st, holes)
+        assert not tab_explore2d.select_model(st, "alpha", runs)
+        assert folders.same(st["e2_runs_dir"], holes)
+    finally:
+        st["e2_runs_dir"] = runs
+        tab_explore2d.refresh_models(st)
+
+
+def test_train_tab_lists_the_picked_data_folder(app, runs, settings):
+    from structsept.app import folders, tab_train
+
+    st = app.app_state
+    old = st["tr_data_root"]
+    root = runs / "data_tri"
+    _make_dataset(root, "tri_a", n=3)
+    _make_dataset(root, "tri_b")
+    try:
+        # picking one dataset inside SdfSamples lists its whole root
+        tab_train.set_data_folder(st, root / "SdfSamples" / "tri_b")
+        assert folders.same(st["tr_data_root"], root)
+        assert sorted(r["name"] for r in st["tr_datasets"].values()) == [
+            "tri_a",
+            "tri_b",
+        ]
+        assert st["tr_datasets"][st["tr_combo"].get()]["name"] == "tri_b"
+        assert st["tr_data_text"].get().endswith("2 datasets")
+        assert json.loads(settings.read_text(encoding="utf-8"))[
+            folders.TRAIN_DATA
+        ] == str(root.resolve())
+
+        tab_train.set_data_folder(st, runs / "holes_nowhere_yet")  # no such data
+        assert st["tr_combo"].get() == "" and not st["tr_datasets"]
+        assert "no SdfSamples folder here" in st["tr_data_text"].get()
+        assert st["tr_readiness"].get().startswith("No dataset found under")
+    finally:
+        st["tr_data_root"] = old
+        tab_train.refresh_datasets(st)
+
+
+def test_explore_lists_the_picked_folder_beside_the_shipped(app, runs, settings):
+    """Browse... on the 3-D Explore tab: the runs follow the folder, the
+    decoders shipped with the library stay whatever the folder."""
+    from structsept.app import folders, tab_explore
+
+    st = app.app_state
+    lattices = runs / "lattices"
+    lattices.mkdir()
+    _make_run(lattices, "cross_d2", trained=True, geom=3)
+    _make_run(lattices, "flat_d2", trained=True)  # 2-D: not for this tab
+    _make_run(runs, "cross_top", trained=True, geom=3)
+    local = lambda: sorted(  # noqa: E731
+        e.name for e in st["ex_models"].values() if e.source == "run"
+    )
+    shipped = sum(e.source == "pretrained" for e in st["ex_models"].values())
+    try:
+        tab_explore.set_folder(st, lattices)
+        assert local() == ["cross_d2"]
+        assert sum(e.source == "pretrained" for e in st["ex_models"].values()) == (
+            shipped
+        )
+        assert (
+            st["ex_folder_text"].get().endswith(f"1 decoder here + {shipped} shipped")
+        )
+        assert json.loads(settings.read_text(encoding="utf-8"))[
+            folders.EXPLORE_RUNS
+        ] == str(lattices.resolve())
+
+        # a run directory picked by mistake lists its folder, run selected
+        tab_explore.set_folder(st, runs / "cross_top")
+        assert folders.same(st["ex_runs_dir"], runs) and local() == ["cross_top"]
+        assert st["ex_models"][st["ex_combo_model"].get()].name == "cross_top"
+
+        empty = runs / "empty3d"
+        empty.mkdir()
+        tab_explore.set_folder(st, empty)
+        assert local() == [] and "only the" in st["ex_folder_text"].get()
+        # the picker falls back on a shipped decoder rather than going blank
+        assert st["ex_models"][st["ex_combo_model"].get()].source == "pretrained"
+
+        # Open on the Train tab takes Explore to the run's own folder...
+        assert tab_explore.select_model(st, "cross_d2", lattices)
+        assert folders.same(st["ex_runs_dir"], lattices)
+        assert st["ex_models"][st["ex_combo_model"].get()].name == "cross_d2"
+        # ...but not for a 2-D run, which belongs to Explore 2-D
+        assert not tab_explore.select_model(st, "beta", runs)
+        assert folders.same(st["ex_runs_dir"], lattices)
+    finally:
+        st["ex_runs_dir"] = runs
+        tab_explore.refresh_models(st)

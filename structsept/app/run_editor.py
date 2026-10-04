@@ -23,7 +23,7 @@ from tkinter import messagebox, ttk
 
 import DeepSDFStruct.deep_sdf.workspace as ws
 
-from structsept.app import theme, training, widgets
+from structsept.app import folders, theme, training, widgets
 
 STATE_KEY = "run_editor"
 
@@ -39,16 +39,22 @@ def runs_changed(st):
         listener()
 
 
-def training_now(st, name) -> bool:
+def training_now(st, name, runs_dir=None) -> bool:
     """True while the Train tab is training the run called ``name``.
 
     Its directory is written every few epochs: renamed under the trainer,
     the next checkpoint fails; deleted, the run is gone. Another window
     training the same run cannot be seen from here - Windows then refuses
     the rename with a file-in-use error, which the editor reports as such.
+
+    ``runs_dir`` narrows it to the run of that name in that folder: the
+    Explore tabs can list any folder of runs, so two folders may each hold a
+    run called ``name``, and only one of them is being written.
     """
     watched = st.get("tr_watch_dir")
-    return bool(st.get("busy")) and watched is not None and Path(watched).name == name
+    if not (st.get("busy") and watched is not None and Path(watched).name == name):
+        return False
+    return runs_dir is None or folders.same(Path(watched).parent, runs_dir)
 
 
 def open_editor(st, runs_dir, name, on_done=None):
@@ -64,7 +70,7 @@ def open_editor(st, runs_dir, name, on_done=None):
         existing.top.lift()
         existing.top.focus_set()
         return existing
-    if training_now(st, name):
+    if training_now(st, name, runs_dir):
         messagebox.showinfo(
             "Training",
             f"'{name}' is being trained right now. Edit it once the run has finished.",

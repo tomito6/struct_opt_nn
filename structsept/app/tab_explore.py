@@ -7,6 +7,7 @@ variables an MMA run would optimise - while the geometry redraws.
 
 The panel layout follows the questions in that order:
 
+    which folder of runs                 -> header, Browse... (remembered)
     which decoder, and is it usable      -> header, with d, code count and a
                                             warning when the codes are empty
     how many design variables, how many
@@ -29,7 +30,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-from structsept.app import models, run_editor, runtime, theme, viz, widgets
+from structsept.app import folders, models, run_editor, runtime, theme, viz, widgets
 
 DEBOUNCE_MS = 120
 SETTLE_MS = 400
@@ -41,6 +42,9 @@ VOLUME_RES = 32
 DEFAULT_SLICE_RES = 96
 SLICE_CHOICES = ("64", "96", "128", "160")
 DEFAULT_N_BASE = 12
+# "Folder" and "Decoder" share a width, so the Browse... button and the
+# picker start in the same column
+HEADER_LABEL_WIDTH = 8
 
 
 def _sub(n):
@@ -53,8 +57,13 @@ def _sub(n):
 
 
 def build(st, parent, runs_dir):
-    """Populate the Explore tab. ``parent`` is an empty padded frame."""
-    st["ex_runs_dir"] = Path(runs_dir)
+    """Populate the Explore tab. ``parent`` is an empty padded frame.
+
+    ``runs_dir`` is the default folder of the decoder picker; the folder
+    last picked with Browse... wins over it while it still exists.
+    """
+    st["ex_runs_dir"] = folders.remembered(folders.EXPLORE_RUNS, runs_dir)
+    st["ex_folder_text"] = tk.StringVar(value="")
     # a run renamed or deleted anywhere in the app is re-read here too
     st.setdefault("run_listeners", []).append(lambda: refresh_models(st))
     st["ex_n_ctrl"] = [tk.IntVar(value=v) for v in (3, 3, 2)]
@@ -117,9 +126,19 @@ def _build_header(st, parent, palette):
     outer, body = widgets.card(parent, palette)
     outer.pack(fill="x")
 
+    # the local runs the picker lists come from one folder, not every run
+    # there is; the shipped decoders are listed whatever the folder
+    widgets.folder_row(
+        body,
+        st["ex_folder_text"],
+        lambda: browse_folder(st),
+        label_width=HEADER_LABEL_WIDTH,
+    ).pack(fill="x", pady=(0, 6))
     row1 = ttk.Frame(body, style="Card.TFrame")
     row1.pack(fill="x")
-    ttk.Label(row1, text="Decoder", style="Card.TLabel").pack(side="left")
+    ttk.Label(row1, text="Decoder", style="Card.TLabel", width=HEADER_LABEL_WIDTH).pack(
+        side="left"
+    )
     # a textvariable rather than <<ComboboxSelected>>: the event only fires for
     # a user pick, so a decoder set from the Train tab would not mark the
     # configuration stale
@@ -443,6 +462,7 @@ def _build_footer(st, parent, palette):
 
 
 def refresh_models(st):
+    """Re-read the shipped decoders and the runs of the current folder."""
     # Only unit-cell decoders: a planar (2-D) one cannot be tiled into a
     # lattice, and lives on the Explore 2-D tab instead.
     entries = models.list_models(st["ex_runs_dir"], geom_dimension=3)
@@ -457,13 +477,79 @@ def refresh_models(st):
     combo.configure(values=list(labels), width=widgets.combo_width(labels))
     if labels and combo.get() not in labels:
         combo.set(next(iter(labels)))
+    n_runs = sum(entry.source == "run" for entry in entries)
+    n_shipped = len(entries) - n_runs
+    st["ex_folder_text"].set(
+        f"{folders.display(st['ex_runs_dir'])}  ·  "
+        + (
+            f"{n_runs} decoder{'s' if n_runs != 1 else ''} here "
+            f"+ {n_shipped} shipped"
+            if n_runs
+            else f"no 3-D decoder here, only the {n_shipped} shipped ones"
+        )
+    )
     _update_edit_button(st)
 
 
-def select_model(st, name):
-    """Point the picker at a run by name; used by the Train tab."""
+def browse_folder(st):
+    """Browse...: pick the folder of runs the decoder picker lists."""
+    chosen = filedialog.askdirectory(
+        parent=st["root"],
+        title="Folder with 3-D decoders (training runs)",
+        initialdir=str(st["ex_runs_dir"]),
+        mustexist=True,
+    )
+    if not chosen:
+        return False
+    set_folder(st, chosen)
+    return True
+
+
+def set_folder(st, folder):
+    """List the runs of ``folder`` from now on, and remember it.
+
+    Everything that reads runs on this tab - Load, Edit..., Refresh, the
+    listeners fired by a rename elsewhere - goes through ``st["ex_runs_dir"]``,
+    so this is the only place the folder changes. A run directory picked by
+    mistake lists its parent, with that run selected. The shipped decoders
+    stay in the list whatever the folder: they belong to the library, not to
+    any folder of runs.
+    """
+    folder, run = models.runs_folder(folder)
+    st["ex_runs_dir"] = folder
+    folders.remember(folders.EXPLORE_RUNS, folder)
+    refresh_models(st)
+    if run is not None:
+        select_model(st, run)
+    n = sum(entry.source == "run" for entry in st["ex_models"].values())
+    widgets.append(
+        st["ex_log"],
+        (
+            f"Decoders from {folder}: {n} found."
+            if n
+            else f"No 3-D decoder in {folder}. A decoder is a run directory "
+            "(specs.json + ModelParameters/latest.pth) directly inside the folder."
+        ),
+    )
+
+
+def select_model(st, name, runs_dir=None):
+    """Point the picker at a decoder by name; used by the Train tab.
+
+    ``runs_dir`` is the folder a run lives in. When the picker lists a
+    different folder it moves there - but only if the run is a loadable
+    3-D decoder, so a run that cannot be opened here leaves the picker where
+    it was. With a ``runs_dir`` only local runs match, never a shipped
+    decoder of the same name.
+    """
+    if runs_dir is not None:
+        if not folders.same(runs_dir, st["ex_runs_dir"]):
+            entries = models.list_models(runs_dir, geom_dimension=3)
+            if not any(e.name == name and e.source == "run" for e in entries):
+                return False
+            set_folder(st, runs_dir)
     for label, entry in st.get("ex_models", {}).items():
-        if entry.name == name:
+        if entry.name == name and (runs_dir is None or entry.source == "run"):
             st["ex_combo_model"].set(label)
             return True
     return False
@@ -481,8 +567,13 @@ def _edit_model(st):
     entry = st.get("ex_models", {}).get(st["ex_combo_model"].get())
     if entry is None or entry.source != "run":
         return None
+    # the run's own parent, not the folder setting: the one names the run
+    # that was picked, the other only where the picker looks now
     return run_editor.open_editor(
-        st, st["ex_runs_dir"], entry.name, on_done=lambda name: select_model(st, name)
+        st,
+        Path(entry.ref).parent,
+        entry.name,
+        on_done=lambda name: select_model(st, name),
     )
 
 
@@ -520,7 +611,13 @@ def _update_derived(st):
 
     loaded = st.get("ex_loaded_config")
     if loaded is not None:
-        changed = loaded != (st["ex_combo_model"].get(), tuple(n_ctrl), tuple(tiling))
+        entry = st.get("ex_models", {}).get(st["ex_combo_model"].get())
+        # by path too: two folders can each hold a run of the same name
+        changed = loaded != (
+            st["ex_combo_model"].get(),
+            tuple(n_ctrl),
+            tuple(tiling),
+        ) or (entry is not None and entry.ref != st["ex_entry"].ref)
         st["ex_stale"].set("settings changed - press Load to apply" if changed else "")
 
 

@@ -125,6 +125,25 @@ def _is_run_dir(path: Path) -> bool:
     ).is_file()
 
 
+def runs_folder(path) -> tuple[Path, str | None]:
+    """The folder a decoder picker should list, for a folder the user picked.
+
+    A picker lists the run directories directly inside one folder (not
+    recursively: keeping runs in separate folders is what keeps the lists
+    short). Picking one run directory itself - an easy slip in a folder
+    dialog - lists the folder it sits in, with that run to preselect.
+
+    Returns
+    -------
+    (pathlib.Path, str or None)
+        The folder to list and the run name to preselect, if any.
+    """
+    path = Path(path)
+    if (path / "specs.json").is_file():
+        return path.parent, path.name
+    return path, None
+
+
 def list_models(runs_dir, geom_dimension=None) -> list[ModelEntry]:
     """Every usable decoder: the shipped pretrained ones plus local training runs.
 

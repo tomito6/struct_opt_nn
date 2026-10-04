@@ -13,6 +13,10 @@ experiments/outputs/
 # Sampled datasets and trained runs of the structsept app: heavy and reproducible.
 data/
 runs/
+# The folders the app's pickers were last pointed at (structsept/app/folders.py):
+# paths on this machine, meaningless on another.
+.structsept_app.json
+.structsept_app.json.tmp
 
 # The reference paper (Kofler et al., Graphical Models 142 (2025) 101307) is
 # Elsevier-copyrighted and this repo is public. CLAUDE.md expects the PDF one
