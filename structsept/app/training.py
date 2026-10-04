@@ -10,7 +10,9 @@ What goes into specs.json is described field by field in
 
 import json
 import logging
+import os
 import shutil
+import stat
 import time
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -446,7 +448,22 @@ def delete_run(runs_dir, name):
         raise FileNotFoundError(f"'{name}' does not exist.")
     if not (path / ws.specifications_filename).is_file():
         raise ValueError(f"'{name}' has no specs.json, so it is not a run.")
-    shutil.rmtree(path)
+    shutil.rmtree(path, onexc=_clear_readonly_and_retry)
+
+
+def _clear_readonly_and_retry(func, path, exc):
+    """``shutil.rmtree`` error handler: drop the read-only flag, try once more.
+
+    OneDrive sets the read-only attribute on every folder it syncs, and
+    Windows refuses to remove a read-only directory or file - without this,
+    a run under OneDrive loses all its files and then its empty folder stays
+    behind with ``[WinError 5] Access is denied``. Anything else, or a second
+    failure, is raised as it is.
+    """
+    if func not in (os.rmdir, os.unlink) or not isinstance(exc, PermissionError):
+        raise exc
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 def read_description(run_dir) -> str:

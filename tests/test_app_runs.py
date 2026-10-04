@@ -11,6 +11,9 @@ into the app's state, so the repo's ``runs/`` is never touched.
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
 import time
 
 import pytest
@@ -122,6 +125,19 @@ def test_delete_run_refuses_what_is_not_a_run(tmp_path):
     with pytest.raises(ValueError):
         training.delete_run(tmp_path, ".")
     assert (tmp_path / "plain").is_dir() and tmp_path.is_dir()
+    training.delete_run(tmp_path, "r")
+    assert not run.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows read-only attribute")
+def test_delete_run_removes_read_only_folders(tmp_path):
+    """OneDrive marks every synced folder read-only; the delete must not stop there."""
+    from structsept.app import training
+
+    run = _make_run(tmp_path, "r", trained=True)
+    os.chmod(run / "ModelParameters" / "latest.pth", stat.S_IREAD)
+    for folder in (run / "ModelParameters", run):
+        os.chmod(folder, stat.S_IREAD)
     training.delete_run(tmp_path, "r")
     assert not run.exists()
 
