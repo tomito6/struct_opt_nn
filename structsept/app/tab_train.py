@@ -227,6 +227,7 @@ RUN_COLUMNS = (
     ("dataset", "dataset", "dataset", 150),
     ("latent_dim", "d", "d", 28),
     ("epochs", "epochs", "epochs", 64),
+    ("train_seconds", "time", "time", 78),
     ("final_loss", "loss", "final loss", 66),
     ("date", "date", "date", 132),
     ("description", "notes", "notes", 140),
@@ -333,7 +334,7 @@ def _run_sort_key(key):
 
     def value(row):
         raw = row.get(key)
-        if key in ("latent_dim", "epochs", "final_loss"):
+        if key in ("latent_dim", "epochs", "train_seconds", "final_loss"):
             missing = not isinstance(raw, (int, float))
             return (missing, 0 if missing else float(raw))
         return (raw is None, str(raw or "").lower())
@@ -365,6 +366,8 @@ def _fill_runs(st):
                 row.get("latent_dim") if row.get("latent_dim") is not None else "?",
                 # "80/800" for a run that stopped short of its epochs
                 training.epochs_text(row.get("epochs"), row.get("last_epoch")),
+                # of the epochs it holds, so "80/800" reads with its own time
+                training.duration_text(row.get("train_seconds")),
                 f"{loss:.4f}" if isinstance(loss, (int, float)) else "-",
                 date,
                 # one line in the table; the editor shows the notes in full

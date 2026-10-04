@@ -275,6 +275,49 @@ def test_table_shows_notes_and_keeps_the_selection(app, runs):
     assert set(st["tr_run_buttons"]) == {"open", "edit", "hparams", "delete"}
 
 
+def test_the_table_says_how_long_a_run_trained(app, runs):
+    """The time column sums the per-epoch timings the trainer logs, the same
+    way for every run whoever launched it, and sorts as a number."""
+    import torch
+
+    from structsept.app import tab_train, training
+
+    def logs(name, timing):
+        torch.save(
+            {"epoch": len(timing), "loss": [0.1] * len(timing), "timing": timing},
+            runs / name / "Logs.pth",
+        )
+
+    logs("alpha", [1800.0, 1800.0, 2160.0])  # 1 h 36 min
+    logs("beta", [20.0, 25.0])
+    st = app.app_state
+    tab_train.refresh_runs(st)
+    rows = {r["name"]: r for r in st["tr_runs"]}
+    assert rows["alpha"]["train_seconds"] == 5760.0
+    assert rows["beta"]["train_seconds"] == 45.0
+
+    tree = st["tr_tree"]
+    column = tree["columns"].index("time")
+    cells = {
+        tree.item(i, "text"): tree.item(i, "values")[column]
+        for i in tree.get_children()
+    }
+    assert cells == {"alpha": "1 h 36 min", "beta": "45 s"}
+    tab_train.sort_runs(st, "train_seconds")
+    assert _shown(st) == ["beta", "alpha"]
+
+    logs("beta", [20.0, 25.0, 1200.0])  # rewritten on disk: the cache follows
+    assert training.training_seconds(runs / "beta") == 1245.0
+    (runs / "beta" / "Logs.pth").write_bytes(b"half written")
+    assert training.training_seconds(runs / "beta") is None
+    assert training.training_seconds(runs / "nothing") is None
+
+    assert training.duration_text(None) == "-"
+    assert training.duration_text(59) == "59 s"
+    assert training.duration_text(1200) == "20 min"
+    assert training.duration_text(6982) == "1 h 56 min"
+
+
 def test_edit_renames_and_annotates(app, runs):
     from structsept.app import tab_train
 

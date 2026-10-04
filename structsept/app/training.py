@@ -233,6 +233,9 @@ def list_runs(runs_dir):
     is what its checkpoint holds (:func:`checkpoint_epoch`). They differ for
     a run that was stopped or died, which ``trained`` alone cannot tell from
     a finished one: it only says that a checkpoint exists.
+
+    ``train_seconds`` is how long the trainer took for the epochs it logged
+    (:func:`training_seconds`), ``None`` for a run that never started.
     """
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
@@ -262,6 +265,7 @@ def list_runs(runs_dir):
                 "date_is_estimate": estimated,
                 "epochs": meta.get("epochs", specs.get("NumEpochs")),
                 "last_epoch": checkpoint_epoch(path),
+                "train_seconds": training_seconds(path),
                 "final_loss": meta.get("final_loss", _final_loss(path)),
                 "description": specs.get("Description") or "",
                 "trained": (path / ws.model_params_subdir / "latest.pth").is_file(),
@@ -308,6 +312,62 @@ def epochs_text(epochs, last_epoch) -> str:
     if isinstance(last_epoch, int) and isinstance(epochs, int) and last_epoch < epochs:
         return f"{last_epoch}/{epochs}"
     return str(epochs)
+
+
+# Logs.pth path -> ((mtime_ns, size), seconds): a finished run's log never
+# changes, and the runs table re-reads every row on each refresh
+_TIMING_CACHE: dict = {}
+
+
+def training_seconds(run_dir):
+    """Seconds the trainer spent on a run's logged epochs, or ``None``.
+
+    The sum of the per-epoch ``timing`` list the trainer keeps in
+    ``Logs.pth``. That one source covers every run alike, whoever launched
+    it - the Train tab, ``unattended.py`` or a script in ``experiments/`` -
+    where a ``metadata.json`` field would exist only for the launchers that
+    write it. It counts the epoch loops only: data loading before epoch 1 and
+    checkpoint writes are left out, which makes it ~0.3 % shorter than the
+    wall time the scripts measure.
+
+    ``Logs.pth`` is rewritten with the ``latest`` checkpoint, so a run that
+    was stopped or died reports the time of the epochs its checkpoint holds;
+    a resumed run carries its log along and reports all sessions together.
+    ``None`` when there is no log yet or it cannot be read (half-written
+    while the trainer saves it).
+    """
+    import torch
+
+    path = Path(run_dir) / ws.logs_filename
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _TIMING_CACHE.get(str(path))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        data = torch.load(path, map_location="cpu", weights_only=False)
+        seconds = float(sum(data.get("timing") or []))
+    except Exception:
+        return None
+    _TIMING_CACHE[str(path)] = (stamp, seconds)
+    return seconds
+
+
+def duration_text(seconds) -> str:
+    """A training time for a table cell: ``45 s``, ``20 min``, ``1 h 56 min``.
+
+    ``-`` when unknown. Minutes are rounded, so an hour-long run does not
+    pretend to second precision.
+    """
+    if not isinstance(seconds, (int, float)):
+        return "-"
+    if seconds < 60:
+        return f"{seconds:.0f} s"
+    hours, minutes = divmod(round(seconds / 60), 60)
+    return f"{hours} h {minutes} min" if hours else f"{minutes} min"
 
 
 def _file_date(path) -> str:
