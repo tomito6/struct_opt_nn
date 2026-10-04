@@ -2,13 +2,14 @@
 
 The decoder pickers of the Explore and Explore 2-D tabs list the training
 runs of one folder each (Explore adds the decoders shipped with the library,
-whatever the folder), and the Train tab's dataset picker the datasets of one
-data root. By default those are ``runs/`` and ``data/`` at the repo root; a
-Browse... button points any of them at another folder - one per dataset
-family, say, so the plate-with-hole runs and the triangle runs stop sharing
-one long list. What each folder must hold is checked by the tab that lists
-it (``models.runs_folder``, ``datasets.data_root_for``); this module only
-stores, compares and prints paths.
+whatever the folder); the Train tab's dataset picker lists the datasets of
+one data root, and its runs table the runs of one folder, which is also where
+a new run is written. By default those are ``runs/`` and ``data/`` at the
+repo root; a Browse... button points any of them at another folder - one per
+dataset family, say, so the plate-with-hole runs and the triangle runs stop
+sharing one long list. What each folder must hold is checked by the tab that
+lists it (``models.runs_folder``, ``datasets.data_root_for``); this module
+only stores, compares and prints paths.
 
 The choice is stored in one small JSON file at the repo root, gitignored like
 ``data/`` and ``runs/``: a folder on this laptop means nothing on another one.
@@ -32,6 +33,7 @@ SETTINGS_PATH = REPO_ROOT / ".structsept_app.json"
 EXPLORE_RUNS = "explore_runs_dir"
 EXPLORE2D_RUNS = "explore2d_runs_dir"
 TRAIN_DATA = "train_data_root"
+TRAIN_RUNS = "train_runs_dir"
 
 
 def _read() -> dict:

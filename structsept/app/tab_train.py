@@ -6,7 +6,9 @@ parametric shapes - so this tab only picks one, states whether it is big
 enough for the requested latent dimension, runs the trainer and keeps a record
 of the runs that came out. The datasets listed are those of one data root -
 ``data/`` unless another was picked with Browse... (remembered between
-launches, see ``folders``) - and the run trains from that root.
+launches, see ``folders``) - and the run trains from that root. The runs
+table works the same way on one folder of runs, ``runs/`` by default, and a
+new run is written into whichever folder the table shows.
 
 The dataset also decides the decoder's input: 3-D samples ``(x, y, z, phi)``
 train the usual unit-cell decoder, explored on the Explore tab; 2-D samples
@@ -33,6 +35,7 @@ from structsept.app import (
     folders,
     hparam_window,
     hyperparams,
+    models,
     run_editor,
     runtime,
     tab_explore,
@@ -51,13 +54,15 @@ PROGRESS_MS = 1500
 def build(st, parent, data_root, runs_dir):
     """Populate the Train tab. ``parent`` is an empty padded frame.
 
-    ``data_root`` is the default folder of the dataset picker; the folder
-    last picked with Browse... wins over it while it still exists. Runs are
-    always written to ``runs_dir``.
+    ``data_root`` and ``runs_dir`` are the default folders of the dataset
+    picker and of the runs table; the folder last picked with either
+    Browse... wins over its default while it still exists. New runs are
+    written into the folder the runs table shows.
     """
     st["tr_data_root"] = folders.remembered(folders.TRAIN_DATA, data_root)
     st["tr_data_text"] = tk.StringVar(value="")
-    st["tr_runs_dir"] = Path(runs_dir)
+    st["tr_runs_dir"] = folders.remembered(folders.TRAIN_RUNS, runs_dir)
+    st["tr_runs_text"] = tk.StringVar(value="")
     st["tr_hparams"] = hyperparams.defaults()
     # where the current set was loaded from ("Start from" / "Import sheet"),
     # or None: see hyperparams.origin_summary
@@ -260,6 +265,10 @@ def _build_runs(st, parent, palette):
     )
     outer.pack(fill="both", expand=True)
 
+    # the folder the table lists - and the one a new run is written into
+    widgets.folder_row(body, st["tr_runs_text"], lambda: browse_runs_folder(st)).pack(
+        fill="x", pady=(0, 6)
+    )
     table = ttk.Frame(body, style="Card.TFrame")
     table.pack(fill="both", expand=True)
     columns = tuple(col for _, col, _, _ in RUN_COLUMNS if col != "#0")
@@ -385,7 +394,50 @@ def set_data_folder(st, folder):
 def refresh_runs(st):
     """Re-read the run directories and redraw the table in the current order."""
     st["tr_runs"] = training.list_runs(st["tr_runs_dir"])
+    n = len(st["tr_runs"])
+    st["tr_runs_text"].set(
+        f"{folders.display(st['tr_runs_dir'])}  ·  "
+        + (f"{n} run{'s' if n != 1 else ''}" if n else "no run here yet")
+        + "  ·  new runs are saved here"
+    )
     _fill_runs(st)
+
+
+def browse_runs_folder(st):
+    """Browse...: pick the folder of runs the table lists and trains into."""
+    chosen = filedialog.askdirectory(
+        parent=st["root"],
+        title="Runs folder (listed here, new runs are saved here)",
+        initialdir=str(st["tr_runs_dir"]),
+        mustexist=True,
+    )
+    if not chosen:
+        return False
+    set_runs_folder(st, chosen)
+    return True
+
+
+def set_runs_folder(st, folder):
+    """List the runs of ``folder`` from now on, train into it, and remember it.
+
+    Everything on this tab that touches a run - the table, Edit..., Delete...,
+    Open, "Start from" in the hyperparameter window and the directory a new
+    run is written to - reads ``st["tr_runs_dir"]``, so this is the only
+    place the folder changes. A run that is training keeps writing where it
+    started. A run directory picked by mistake lists its parent, with that
+    run selected.
+    """
+    folder, run = models.runs_folder(folder)
+    st["tr_runs_dir"] = folder
+    folders.remember(folders.TRAIN_RUNS, folder)
+    refresh_runs(st)
+    if run is not None:
+        _select_row(st, run)
+    n = len(st["tr_runs"])
+    widgets.append(
+        st["tr_log"],
+        f"Runs from {folder}: {n} found; new runs are saved there.",
+    )
 
 
 def sort_runs(st, key):

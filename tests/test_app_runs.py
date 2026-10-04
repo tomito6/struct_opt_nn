@@ -674,3 +674,46 @@ def test_explore_lists_the_picked_folder_beside_the_shipped(app, runs, settings)
     finally:
         st["ex_runs_dir"] = runs
         tab_explore.refresh_models(st)
+
+
+def test_runs_table_lists_and_trains_into_the_picked_folder(
+    app, runs, settings, monkeypatch
+):
+    """Browse... on the runs table: the table, Delete... and Open act on the
+    picked folder, and it is the folder a new run would be written into."""
+    from structsept.app import folders, tab_explore2d, tab_train
+
+    st = app.app_state
+    family = runs / "family"
+    family.mkdir()
+    _make_run(family, "fam_a", trained=True)
+    _make_run(family, "fam_b", stamp="2026-09-29T10:00:00")
+    try:
+        tab_train.set_runs_folder(st, family)
+        assert _shown(st) == ["fam_b", "fam_a"]
+        assert st["tr_runs_text"].get().endswith("2 runs  ·  new runs are saved here")
+        assert json.loads(settings.read_text(encoding="utf-8"))[
+            folders.TRAIN_RUNS
+        ] == str(family.resolve())
+
+        monkeypatch.setattr(tab_train.messagebox, "askyesno", lambda *a, **k: True)
+        _select(st, "fam_b")
+        assert tab_train.delete_run(st)
+        assert not (family / "fam_b").exists() and (family / "fam_a").is_dir()
+
+        # a run directory picked by mistake lists its folder, run selected
+        tab_train.set_runs_folder(st, runs / "alpha")
+        assert folders.same(st["tr_runs_dir"], runs)
+        assert tab_train.selected_run(st)["name"] == "alpha"
+
+        # Open hands the explorer the run of the folder the table shows
+        tab_train.set_runs_folder(st, family)
+        _select(st, "fam_a")
+        tab_train._open_in_explore(st)
+        assert folders.same(st["e2_runs_dir"], family)
+        assert st["e2_models"][st["e2_combo_model"].get()].name == "fam_a"
+    finally:
+        st["tr_runs_dir"] = st["e2_runs_dir"] = runs
+        tab_train.refresh_runs(st)
+        tab_explore2d.refresh_models(st)
+        st["notebook"].select(st["tab_frames"]["train"])
