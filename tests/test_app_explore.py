@@ -196,6 +196,43 @@ def test_changing_the_decoder_marks_the_configuration_stale(loaded):
     assert st["ex_stale"].get()
 
 
+def test_a_click_on_the_groove_puts_the_grip_there(app):
+    """Tk's left click steps a ttk.Scale by 1.0 towards the click, so on a
+    latent slider a few tenths wide every click on the groove sent the grip
+    to an end. It now jumps to the clicked value; holding the button drags on
+    from there, and a press on the grip itself still drags."""
+    from tkinter import ttk
+
+    # its own window: packed into the root, behind a notebook that already
+    # fills it, the scale would get no size and no click could land on it
+    top = tk.Toplevel(app)
+    _hide(top)
+    scale = ttk.Scale(top, from_=-0.3, to=0.3, length=300)
+    scale.pack()
+    app.update()
+
+    def press_drag_release(start, end):
+        for sequence, value in (
+            ("<Button-1>", start),
+            ("<B1-Motion>", end),
+            ("<ButtonRelease-1>", end),
+        ):
+            x, y = scale.coords(value)
+            scale.event_generate(sequence, x=x, y=y)
+            if sequence == "<Button-1>":
+                assert float(scale.get()) == pytest.approx(start, abs=0.01)
+        app.update()
+
+    try:
+        scale.set(-0.25)
+        press_drag_release(0.15, -0.1)  # on the groove
+        assert float(scale.get()) == pytest.approx(-0.1, abs=0.01)
+        press_drag_release(-0.1, 0.2)  # on the grip
+        assert float(scale.get()) == pytest.approx(0.2, abs=0.01)
+    finally:
+        top.destroy()
+
+
 def test_volume_fraction_is_unbiased():
     """Cell centres, not grid nodes: a node grid puts 27% of its samples on the
     domain faces, where CappedBorderSDF forces phi >= 0."""

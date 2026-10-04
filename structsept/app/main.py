@@ -66,6 +66,7 @@ def build_app(root=None):
     # the theme has to be applied before any widget exists: option_add only
     # reaches widgets created afterwards
     palette = theme.apply_theme(root)
+    widgets.jump_scales_on_click(root)
     root.title("structsept - DeepSDF lattice explorer")
     theme.clamp_geometry(root, 1500, 980)
 

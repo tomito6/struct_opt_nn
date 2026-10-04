@@ -89,6 +89,24 @@ def spinbox(parent, var, low, high, step=1, width=5, command=None):
     )
 
 
+def jump_scales_on_click(root):
+    """Make a left click on a ``ttk.Scale``'s groove put the grip right there.
+
+    Tk's own left-click binding steps the value by 1.0 towards the click, and
+    keeps stepping while the button is held. Every scale in this app spans far
+    less than that - a latent component a few tenths, the slice z one unit
+    cell - so the first step overshoots and the grip lands on an end. Tk ships
+    the wanted behaviour as ``ttk::scale::Jump`` but binds it to the middle
+    and right buttons only; this binds it to the left one too. Holding the
+    button after the jump drags from there, and a press on the grip itself
+    drags exactly as before.
+
+    A class binding: it covers every ``ttk.Scale`` in ``root``'s interpreter,
+    whether built before or after this call.
+    """
+    root.bind_class("TScale", "<Button-1>", "ttk::scale::Jump %W %x %y")
+
+
 def read_int(var, fallback):
     """Spinboxes accept typed text, so a value can be empty or garbage.
 
