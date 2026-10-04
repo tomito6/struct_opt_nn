@@ -194,9 +194,14 @@ def list_models(runs_dir, geom_dimension=None) -> list[ModelEntry]:
     return entries
 
 
-def load_model(entry: ModelEntry):
-    """Load the decoder and its latent codes for a ModelEntry."""
-    return get_model(entry.ref, checkpoint=_CHECKPOINT)
+def load_model(entry: ModelEntry, checkpoint=_CHECKPOINT):
+    """Load the decoder and its latent codes for a ModelEntry.
+
+    ``checkpoint`` is ``"latest"`` (what every picker shows) or the epoch of
+    a snapshot the run kept (``ModelParameters/<epoch>.pth``), for looking
+    back along one training trajectory.
+    """
+    return get_model(entry.ref, checkpoint=str(checkpoint))
 
 
 def trained_latents(model) -> np.ndarray:

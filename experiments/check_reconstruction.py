@@ -50,11 +50,17 @@ How to run
     uv run python experiments/check_reconstruction.py            # every trained 2-D run
     uv run python experiments/check_reconstruction.py --run plate_tri_2d_h_d1_4x64
     uv run python experiments/check_reconstruction.py --run A --run B --res 100 --no-plot
+    uv run python experiments/check_reconstruction.py --run A --checkpoint 100
 
 One line per run is printed; ``outputs/reconstruction/<run>.csv`` holds the
 per-shape numbers and ``<run>.png`` the eight worst shapes, decoded contour
 (red) over the exact one (cyan, dashed). About 10 s per run for the 4 x 64
 decoders and 1-2 min for the 8 x 256 ones at the default resolution.
+
+``--checkpoint`` reads an earlier snapshot of the run instead of its
+``latest.pth`` - any epoch the run kept under ``ModelParameters/`` - and
+writes ``<run>_ep<epoch>.csv`` / ``.png``, so the ghost count can be followed
+along one training trajectory.
 """
 
 from __future__ import annotations
@@ -95,8 +101,14 @@ STORED_TOL = 1e-4
 # --------------------------------------------------------------------------- #
 
 
-def load_run(run_dir):
+def load_run(run_dir, checkpoint="latest"):
     """Decoder, trained codes and exact fields of one run.
+
+    Parameters
+    ----------
+    run_dir : path-like
+    checkpoint : str or int
+        ``"latest"`` or the epoch of a snapshot the run kept.
 
     Returns
     -------
@@ -150,7 +162,9 @@ def load_run(run_dir):
             "off the stored samples - wrong frame or parameters"
         )
 
-    model = models.load_model(entry)
+    if not (run_dir / "ModelParameters" / f"{checkpoint}.pth").is_file():
+        raise SystemExit(f"{run_dir.name}: no checkpoint '{checkpoint}' saved")
+    model = models.load_model(entry, checkpoint)
     codes = models.trained_latents(model)
     if len(codes) != len(names):
         raise SystemExit(
@@ -258,12 +272,14 @@ def measure(decoded, exact, xs, phi) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def check_run(run_dir, res=200, plot=True, log=print) -> dict:
+def check_run(run_dir, res=200, plot=True, log=print, checkpoint="latest") -> dict:
     """Measure every training shape of a run; write its csv and figure.
 
-    Returns the summary row that is also printed.
+    ``checkpoint`` is ``"latest"`` or the epoch of an earlier snapshot; the
+    files of an earlier one are named ``<run>_ep<epoch>``. Returns the
+    summary row that is also printed.
     """
-    run = load_run(run_dir)
+    run = load_run(run_dir, checkpoint)
     model, codes, names = run["model"], run["codes"], run["names"]
     xs = np.linspace(-1.0, 1.0, int(res))
     grid_x, grid_y = np.meshgrid(xs, xs)
@@ -279,11 +295,12 @@ def check_run(run_dir, res=200, plot=True, log=print) -> dict:
     eq38 = np.array([r["eq38"] for r in rows])
     wrong = np.array([r["wrong_sign"] for r in rows])
     entry = run["entry"]
+    latest = str(checkpoint) == "latest"
     summary = {
         "run": pathlib.Path(run_dir).name,
         "dataset": run["dataset"],
         "shapes": len(rows),
-        "epoch": entry.epoch,
+        "epoch": entry.epoch if latest else int(checkpoint),
         "planned_epochs": entry.planned_epochs,
         "eq38_mean": float(np.nanmean(eq38)),
         "eq38_median": float(np.nanmedian(eq38)),
@@ -295,15 +312,14 @@ def check_run(run_dir, res=200, plot=True, log=print) -> dict:
         "missing_shapes": int(sum(r["missing_voids"] > 0 for r in rows)),
     }
 
+    stem = summary["run"] if latest else f"{summary['run']}_ep{summary['epoch']}"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(
-        OUT_DIR / f"{summary['run']}.csv", "w", newline="", encoding="utf-8"
-    ) as f:
+    with open(OUT_DIR / f"{stem}.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
     if plot:
-        _plot_worst(OUT_DIR / f"{summary['run']}.png", summary, rows, fields, xs)
+        _plot_worst(OUT_DIR / f"{stem}.png", summary, rows, fields, xs)
 
     log(_summary_line(summary))
     return summary
@@ -390,6 +406,11 @@ def main(argv=None):
     parser.add_argument("--runs", default=str(ROOT / "runs"), help="runs directory")
     parser.add_argument("--res", type=int, default=200, help="grid nodes per axis")
     parser.add_argument("--no-plot", action="store_true", help="csv only, no figure")
+    parser.add_argument(
+        "--checkpoint",
+        default="latest",
+        help="'latest' (default) or the epoch of an earlier snapshot of the run",
+    )
     args = parser.parse_args(argv)
 
     runs_dir = pathlib.Path(args.runs)
@@ -403,7 +424,14 @@ def main(argv=None):
     summaries = []
     for name in names:
         try:
-            summaries.append(check_run(runs_dir / name, args.res, not args.no_plot))
+            summaries.append(
+                check_run(
+                    runs_dir / name,
+                    args.res,
+                    not args.no_plot,
+                    checkpoint=args.checkpoint,
+                )
+            )
         except SystemExit as exc:
             # one run of another kind must not hide the others
             print(f"skipped - {exc}")

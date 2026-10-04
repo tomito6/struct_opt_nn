@@ -1112,10 +1112,46 @@ metade dentro / metade fora. E os "16 000 pontos por passo" do paper são
   n166.
 - 203 testes sem treino passam; o único que falha é o da planilha acima.
 
+## O furo fantasma é da seed (04/10)
+
+Pedido: "roda a opção 1 até a época 150 e concerta". Treinei a **mesma
+receita** do `plate_hole_2d_xyr_d3_20260930_0124` (specs copiado chave por
+chave) mudando **só a seed** (42 → 1), cortada na época 150 com snapshot a
+cada 50 — `runs/plate_hole_2d_xyr_d3_seed1_ep150`, script novo
+`experiments/train_plate_xyr_seed.py`. Cortar não muda o que é treinado até
+o corte: o lr em degrau e a rampa do regularizador não dependem do número
+total de épocas. 47 s/época (laptop em uso), 1 h 56 min.
+
+| época | fantasmas, seed 42 | fantasmas, seed 1 | Eq. 38 média, seed 1 |
+|---|---|---|---|
+| 50 | 1 | **0** | 0,0081 |
+| 100 | 35 | **0** | 0,0049 |
+| 150 | 20 | **0** | **0,0043** (mediana 0,0040) |
+| 800 | 27 | — | (seed 42: 0,0136) |
+
+- **Nenhum fantasma em nenhum snapshot**, nas 134 formas. A seed 42 caiu num
+  mínimo ruim cedo (35 fantasmas na época 100) e as 700 épocas seguintes
+  não tiraram. Não era dado, nem arquitetura, nem receita.
+- Na época 150 a seed 1 já está **3× melhor que o paper** (0,0043 contra
+  0,0128) e 3× melhor que o run de 800 da seed 42; só 2 formas acima do
+  erro do paper. O que sobra: furos pequenos colados na borda saem um pouco
+  borrados (figura `outputs/reconstruction/plate_hole_2d_xyr_d3_seed1_ep150_ep100.png`).
+- O run de 150 já aparece no app e pode ser usado como está. Retreinar a
+  receita inteira com a seed 1 é decisão do Tomás (600/150 da planilha do
+  supervisor ou 800/75 do run antigo). O 800/75 o script já faz
+  (`--epochs 800 --every 200`); o 600/150 precisa de uma opção pra trocar o
+  intervalo, que hoje ele se recusa a mudar.
+- `check_reconstruction.py` ganhou `--checkpoint <época>` (lê um snapshot
+  antigo em vez do `latest`); recontou a época 100 da seed 42: 35, igual à
+  auditoria.
+- Lição: uma seed só não diz nada sobre a receita. Antes de concluir que um
+  run longo "não aprende" algo, vale um segundo run curto com outra seed.
+
 ## Perguntas em aberto
 
-- **(02/10)** O fantasma do d = 3 some com outra seed, com o intervalo de
-  decaimento certo, ou com as 166 formas? Qual dos três rodar primeiro?
+- **(02/10, respondida 04/10)** ~~O fantasma do d = 3 some com outra seed,
+  com o intervalo de decaimento certo, ou com as 166 formas?~~ Some com outra
+  seed (seção acima). Falta: retreino completo com seed 1 — 600/150 ou 800/75?
 - **(02/10)** A linha "Points per training step" da planilha é por passo
   (como o app lê) ou por forma (como o paper e os specs do autor)?
 - Qual espessura de placa faz sentido pro caso real do HiWi? Os 0,1 m foram
